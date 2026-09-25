@@ -1,0 +1,31 @@
+# --- Core data / numerics ---
+numpy>=1.26,<3
+pandas>=2.1
+
+# --- PDF extraction ---
+pymupdf>=1.24
+
+# --- Embeddings + vector search ---
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+
+# --- Classification (logistic regression on top of embeddings) ---
+scikit-learn>=1.4
+joblib>=1.3
+
+# --- LLM providers ---
+anthropic>=1.0          # used when LLM_PROVIDER=anthropic
+httpx>=0.27             # used for OpenAI-compatible endpoints (OpenAI, Groq, Ollama, ...)
+
+# --- Backend API ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9  # required by FastAPI for file uploads
+python-dotenv>=1.0
+
+# --- Frontend ---
+streamlit>=1.50
+requests>=2.31
+
+# --- Testing ---
+pytest>=8.0

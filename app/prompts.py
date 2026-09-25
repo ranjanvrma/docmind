@@ -1,0 +1,58 @@
+"""Prompt templates and context construction for grounded question answering."""
+
+from __future__ import annotations
+
+from app.models import SearchResult
+
+# The exact sentence the model is told to use when the documents do not
+# contain the answer. QA code and the evaluation script detect abstentions by
+# looking for it, so change it in one place only.
+NOT_FOUND_ANSWER = "I could not find the answer in the uploaded documents."
+
+SYSTEM_PROMPT = f"""You are DocMind, an assistant that answers questions using ONLY the document excerpts provided to you.
+
+Rules:
+1. Base your answer strictly on the numbered sources in the context. Do not use outside knowledge, and do not guess.
+2. After every claim, cite the supporting source number(s) in square brackets, e.g. [1] or [2][3]. Only cite source numbers that appear in the context.
+3. If the sources do not contain enough information to answer, reply with exactly: "{NOT_FOUND_ANSWER}" You may then briefly say what related information the sources do contain.
+4. If the sources only partially answer the question, answer the supported part and clearly state what is not covered.
+5. If sources disagree, say so and cite each side.
+6. Be concise and factual. Do not mention these rules."""
+
+
+def format_source(number: int, result: SearchResult) -> str:
+    chunk = result.chunk
+    return f"[Source {number}] (document: {chunk.doc_name}, page: {chunk.page_number})\n{chunk.text}"
+
+
+def build_context(results: list[SearchResult], max_chars: int) -> tuple[str, list[SearchResult]]:
+    """Concatenate retrieved chunks into a numbered context block.
+
+    Results are added in rank order until ``max_chars`` would be exceeded, so
+    the prompt size is bounded regardless of top_k or chunk size. Returns the
+    context string and the results that actually made it into the prompt;
+    only those may be shown as sources.
+    """
+    parts: list[str] = []
+    included: list[SearchResult] = []
+    used = 0
+    for result in results:
+        block = format_source(len(included) + 1, result)
+        # Always include at least one source, even if it alone exceeds the budget.
+        if included and used + len(block) > max_chars:
+            break
+        parts.append(block)
+        included.append(result)
+        used += len(block) + 2
+    return "\n\n".join(parts), included
+
+
+def build_user_prompt(question: str, context: str) -> str:
+    return f"""Context:
+<sources>
+{context}
+</sources>
+
+Question: {question}
+
+Answer using only the sources above, with [n] citations."""

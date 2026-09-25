@@ -1,0 +1,29 @@
+# API + UI as two containers from the same image. Data persists in ./data on the host.
+services:
+  api:
+    build: .
+    image: docmind:latest
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  ui:
+    image: docmind:latest
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DOCMIND_API_URL: http://api:8000
+    command: ["streamlit", "run", "frontend/streamlit_app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+    ports:
+      - "8501:8501"

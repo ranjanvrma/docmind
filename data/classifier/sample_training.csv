@@ -1,0 +1,49 @@
+text,label
+"Abstract. We propose a novel attention-based architecture for low-resource machine translation and evaluate it on four benchmark datasets, outperforming strong baselines.",Research Paper
+"In this paper we study the convergence properties of stochastic optimisation methods. Section 2 reviews related work, Section 3 describes our method, and Section 4 reports experiments.",Research Paper
+We present an empirical study of graph neural networks for molecular property prediction. Our results show that pretraining improves performance on small datasets. References follow the conclusion.,Research Paper
+"Abstract: This work introduces a dataset of 10,000 annotated clinical notes and benchmarks several transformer models. We discuss limitations and directions for future research.",Research Paper
+"Related Work. Prior approaches to image segmentation rely on encoder-decoder networks. Unlike previous methods, our approach uses a lightweight transformer decoder. Experimental setup and ablation studies are described below.",Research Paper
+"We hypothesise that curriculum learning reduces sample complexity. To test this, we conduct controlled experiments across three random seeds and report mean and standard deviation.",Research Paper
+"Keywords: federated learning, privacy, differential privacy. We analyse the trade-off between model utility and privacy budget and provide a theoretical bound in Theorem 1.",Research Paper
+Methodology. Participants (n = 120) were randomly assigned to two groups. Statistical significance was assessed using a two-tailed t-test with alpha = 0.05.,Research Paper
+"Annual Report 2023. This report summarises the financial performance, key achievements and outlook of the company. Revenue increased by 12 percent year on year.",Report
+Executive Summary. The audit identified three areas for improvement in procurement processes. Recommendations and a proposed implementation timeline are presented in Section 5.,Report
+"Quarterly Sales Report Q2. Sales in the northern region exceeded targets, while the southern region underperformed due to supply chain delays. Figures 1 to 4 show monthly trends.",Report
+Technical Report: Evaluation of the new water treatment facility. Measured contaminant levels remained below regulatory limits throughout the monitoring period.,Report
+Project Status Report. The project is on schedule and 5 percent under budget. Key risks include staff turnover and vendor dependency. Next milestones are listed below.,Report
+"Market Analysis Report. We assess demand for electric bicycles across five cities and estimate the addressable market at 40 million euros. Findings are based on a survey of 2,000 residents.",Report
+Incident Report. On 14 March the payment service was unavailable for 47 minutes. Root cause analysis attributed the outage to an expired certificate. Corrective actions are summarised.,Report
+Sustainability Report. Our carbon emissions fell by 8 percent compared with the baseline year. This report describes progress against each environmental target.,Report
+Assignment 3 - Data Structures. Due Friday 11:59 pm. Question 1 (10 marks): Implement a binary search tree with insert and delete operations. Submit your code on the course portal.,Assignment
+Homework 2. Answer all questions. Show your working. Q1: Differentiate f(x) = x^2 sin(x). Q2: Evaluate the integral of 1/x from 1 to e. Late submissions lose 10 percent per day.,Assignment
+Lab Exercise 4: Build a linear regression model on the housing dataset. Report the mean squared error on the test set and include a plot of residuals. Total: 20 marks.,Assignment
+"Coursework brief. Write a 2,000-word essay discussing the causes of the First World War. Marks are awarded for argument, use of sources and structure. Submission via Turnitin.",Assignment
+Problem Set 5. Problem 1: Prove that the sum of the first n odd numbers equals n squared. Problem 2: Solve the recurrence T(n) = 2T(n/2) + n. Collaboration policy applies.,Assignment
+Midterm Exam - Operating Systems. Time allowed: 2 hours. Answer any four of the six questions. Each question carries 25 marks. Calculators are not permitted.,Assignment
+"Group Project Assignment. Teams of three will design a mobile app prototype. Deliverables: requirements document, wireframes and a 10-minute presentation. Grading rubric attached.",Assignment
+Tutorial Worksheet 7. Exercise 1: Normalise the following relation to third normal form. Exercise 2: Write SQL queries for the tasks listed below. Solutions will be discussed in class.,Assignment
+Lecture 5 notes - Recursion. Key idea: a function calls itself on a smaller input. Always define a base case. Example: factorial(n) = n * factorial(n-1). Watch out for stack overflow.,Notes
+Biology revision notes: Cell structure. Nucleus - contains DNA. Mitochondria - energy production. Ribosomes - protein synthesis. Remember: plant cells have a cell wall and chloroplasts.,Notes
+"Meeting notes 12 May. Attendees: Priya, Tom, Chen. Discussed launch date. Action items: Tom to update the budget, Chen to contact the supplier. Next meeting Thursday.",Notes
+"Chemistry notes - Acids and bases. pH below 7 is acidic, above 7 is basic. Strong acids fully dissociate in water. Neutralisation: acid + base gives salt + water.",Notes
+Study notes: Supply and demand. Demand curve slopes downward. Supply curve slopes upward. Equilibrium where they intersect. Price ceiling can cause shortages.,Notes
+Week 2 notes - Probability. Independent events: P(A and B) = P(A)P(B). Conditional probability P(A|B) = P(A and B)/P(B). Bayes theorem - important for exam!,Notes
+"Personal notes on the book Deep Work. Main points: schedule focus blocks, limit shallow tasks, embrace boredom, quit social media for a month as an experiment.",Notes
+"Physics cheat sheet. F = ma. Kinetic energy = 1/2 m v^2. Momentum is conserved in closed systems. Units: force in newtons, energy in joules.",Notes
+"Data Protection Policy. This policy sets out how the organisation collects, stores and processes personal data in compliance with the GDPR. All employees must complete annual data protection training.",Policy
+Acceptable Use Policy. Users must not use company systems to access illegal content or share passwords. Violations may result in disciplinary action up to and including termination.,Policy
+Terms and Conditions. By using this service you agree to the following terms. We may suspend accounts that breach these terms. These terms are governed by the laws of Ireland.,Policy
+Leave Policy. Employees are entitled to 25 days of annual leave per year. Leave requests must be submitted at least two weeks in advance and approved by the line manager.,Policy
+"Code of Conduct. Employees must act with integrity, avoid conflicts of interest and report suspected misconduct. This code applies to all staff, contractors and board members.",Policy
+"Privacy Policy. We collect your name, email address and usage data to provide the service. You may request deletion of your data at any time by contacting our data protection officer.",Policy
+Information Security Policy. Scope: all information systems owned by the company. Passwords must be at least 12 characters. Access rights are reviewed quarterly by system owners.,Policy
+Anti-Harassment Policy. The company prohibits harassment of any kind. Complaints will be investigated promptly and confidentially. Retaliation against complainants is strictly forbidden.,Policy
+"Dear Ms Thompson, thank you for your letter of 3 June. I am writing to confirm our meeting next Tuesday at 10 am. Kind regards, James.",Other
+User Manual - Model X200 Coffee Machine. Step 1: Fill the water tank. Step 2: Insert a capsule. Step 3: Press the start button. Descale the machine every three months.,Other
+"Recipe: Vegetable lasagne. Ingredients: pasta sheets, tomatoes, spinach, ricotta, mozzarella. Preheat the oven to 180 degrees and bake for 40 minutes.",Other
+"Welcome to our summer festival! Live music, food trucks and family activities from 12 to 18 August. Tickets available online. Free entry for children under 12.",Other
+"Travel itinerary. Day 1: Arrive in Lisbon, check into the hotel. Day 2: Visit Belem Tower and the Jeronimos Monastery. Day 3: Day trip to Sintra.",Other
+"Invoice #10234. Bill to: Acme Ltd. Description: Consulting services, 12 hours at 90 euros per hour. Total due: 1,080 euros. Payment within 30 days.",Other
+"Newsletter - March edition. This month we welcome five new team members, celebrate our office move and share photos from the charity run.",Other
+"Application form. Please complete all fields in block capitals. Full name, date of birth, address, phone number. Sign and date the declaration below.",Other

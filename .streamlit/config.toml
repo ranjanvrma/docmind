@@ -1,0 +1,6 @@
+[server]
+# Keep in sync with MAX_UPLOAD_MB; the API enforces the real limit.
+maxUploadSize = 25
+
+[browser]
+gatherUsageStats = false

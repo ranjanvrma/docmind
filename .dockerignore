@@ -1,0 +1,12 @@
+.env
+.venv
+venv
+.git
+**/__pycache__
+.pytest_cache
+data/raw/*
+data/processed/*
+data/index/*
+data/classifier/*.joblib
+evaluation/results/*
+notebooks
