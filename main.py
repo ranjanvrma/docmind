@@ -2,6 +2,8 @@
 
     python main.py api                         # run the API (and the built web UI, if web/dist exists)
     python main.py ingest file1.pdf file2.pdf  # upload + index PDFs without the UI
+                                               # (operator documents: not visible to web visitors,
+                                               #  whose libraries are private per browser session)
     python main.py train-classifier data/classifier/sample_training.csv
 
 The web UI lives in web/ (React + Vite). For development run `npm run dev`

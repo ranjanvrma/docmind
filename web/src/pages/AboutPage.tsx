@@ -13,7 +13,7 @@ const COMPONENTS = [
   { icon: FileSearch, title: "Semantic retrieval", body: "The query is embedded with the same model; the top-k most similar passages are returned with document and page." },
   { icon: BrainCircuit, title: "LLM", body: "A provider-agnostic client (Anthropic or OpenAI-compatible). The prompt treats document text as untrusted and requires citations." },
   { icon: Quote, title: "Citations", body: "Every [n] in an answer is checked against the passages actually sent to the model. Numbers that were never provided are flagged, not shown as sources." },
-  { icon: ShieldCheck, title: "Safety", body: "Optional API token, upload and page limits, sanitised source text, and an interface that renders documents and answers as text, never HTML." },
+  { icon: ShieldCheck, title: "Safety", body: "Private per-browser libraries, rate limits, upload and page limits, sanitised source text, and an interface that renders documents and answers as text, never HTML." },
 ];
 
 const NOT_CLAIMED = [
@@ -70,8 +70,7 @@ export function AboutPage() {
               ["Version", data?.version ?? "–"],
               ["Embedding model", data?.embedding_model ?? "–"],
               ["LLM", data ? `${data.llm_provider} / ${data.llm_model}${data.llm_configured ? "" : " (not configured)"}` : "–"],
-              ["Documents", data?.documents ?? "–"],
-              ["Indexed passages", data?.indexed_chunks ?? "–"],
+              ["Session lifetime", data ? `${data.session_ttl_hours} h after last activity` : "–"],
             ].map(([k, v]) => (
               <div key={String(k)} className="flex justify-between gap-4 border-b border-line pb-2.5 last:border-0">
                 <dt className="shrink-0 text-fg-muted">{k}</dt>

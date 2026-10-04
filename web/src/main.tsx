@@ -6,11 +6,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
-import { applyMotion, applyTheme, getMotion, getTheme } from "./lib/preferences";
+import { applyMotion, applyTheme, clearLegacyToken, getMotion, getTheme } from "./lib/preferences";
 
 // Apply stored theme/motion before the first paint to avoid a flash.
 applyTheme(getTheme());
 applyMotion(getMotion());
+clearLegacyToken();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

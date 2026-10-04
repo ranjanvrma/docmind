@@ -37,8 +37,15 @@ class ExtractionResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def compute_document_id(pdf_bytes: bytes) -> str:
-    return sha256_bytes(pdf_bytes)[:DOC_ID_LENGTH]
+def compute_document_id(pdf_bytes: bytes, owner: str | None = None) -> str:
+    """Content hash, scoped to the owner.
+
+    Two sessions uploading the same PDF get different IDs (and separate copies),
+    so a document ID never reveals or grants access to another visitor's upload.
+    """
+    if owner is None:
+        return sha256_bytes(pdf_bytes)[:DOC_ID_LENGTH]
+    return sha256_bytes(owner.encode() + b"\0" + pdf_bytes)[:DOC_ID_LENGTH]
 
 
 def validate_pdf_upload(filename: str, data: bytes, max_bytes: int) -> None:

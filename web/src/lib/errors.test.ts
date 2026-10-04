@@ -6,7 +6,10 @@ import { formatBytes, formatRelative, similarityPercent } from "./format";
 describe("error classification", () => {
   it.each([
     [0, null, "", "network"],
-    [401, "Missing or invalid API token", "", "auth"],
+    [401, "Administrator token required", "", "auth"],
+    [403, "Cross-site request blocked", "", "forbidden"],
+    [409, "You can keep at most 20 documents", "/documents/upload", "quota"],
+    [503, "DocMind is at capacity right now.", "/documents/upload", "server_busy"],
     [404, "Document not found", "", "not_found"],
     [413, "Upload request exceeds 10 MB", "/documents/upload", "too_large"],
     [400, "'x.pdf' does not look like a PDF", "/documents/upload", "invalid_file"],
@@ -60,5 +63,13 @@ describe("formatting", () => {
     expect(formatRelative("2026-10-04T11:59:50Z", now)).toBe("just now");
     expect(formatRelative("2026-10-04T11:30:00Z", now)).toBe("30 min ago");
     expect(formatRelative("not a date", now)).toBe("–");
+  });
+});
+
+describe("rate limit messages", () => {
+  it("tells the visitor how long to wait", () => {
+    expect(new ApiError(429, "Question limit reached.", "/ask", 42).message).toBe("Too many requests. Please try again in 42 seconds.");
+    expect(new ApiError(429, null, "/ask", 1800).message).toBe("Too many requests. Please try again in 30 minutes.");
+    expect(describeError(new ApiError(429, "Question limit reached.", "/ask", 5)).detail).toBe("Question limit reached.");
   });
 });

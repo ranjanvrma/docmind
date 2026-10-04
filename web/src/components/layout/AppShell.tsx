@@ -5,7 +5,6 @@ import { Link, Outlet, useLocation } from "react-router";
 import { duration, ease } from "@/components/animations/motion";
 import { AppBackground } from "@/components/effects/Background";
 import { NavBar } from "@/components/navigation/NavBar";
-import { AuthDialog } from "./AuthDialog";
 
 export function AppShell() {
   const location = useLocation();
@@ -43,7 +42,6 @@ export function AppShell() {
           How it works
         </Link>
       </footer>
-      <AuthDialog />
     </div>
   );
 }

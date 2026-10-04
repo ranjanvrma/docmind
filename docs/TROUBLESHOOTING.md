@@ -5,7 +5,14 @@
 | UI says **"Unable to connect to DocMind"** | API not running, or still loading the embedding model (a few seconds; longer on the first start, when the model is downloaded) | Start `python main.py api`; wait for "DocMind API ready" in the log. In dev, check that `DOCMIND_API_URL` points at it. |
 | Vite dev server: `/api/...` returns **502** | The proxy cannot reach the API | Same as above; the API must listen on the URL in `DOCMIND_API_URL` (default `http://127.0.0.1:8000`) |
 | Every endpoint returns **503 "Search index unavailable: …"** | The index or registry files are missing, corrupt, or were built with another embedding model | Follow the message. Usually: stop the app, delete `DATA_DIR/index/`, start again, then *Process pending documents*; the registry marks affected documents for re-processing. If the message names `EMBEDDING_MODEL`, either restore the original model or rebuild the index. |
-| UI keeps asking for an **access token** / API returns 401 | `DOCMIND_API_TOKEN` is set on the server | Enter that token in the dialog or in Settings → This browser |
+| Admin API returns **401** / Settings shows only "This browser" | Server settings are admin-only (`/api/admin/*`) | Use *Administrator sign-in* on the Settings page with `DOCMIND_API_TOKEN`; it is kept for the page only, so reloading signs out. Visitors never need a token. |
+| Admin sign-in returns **429** "Too many failed attempts" | More than 10 wrong tokens from your IP in 15 minutes | Wait 15 minutes and use the correct token |
+| **"Too many requests. Please try again in …"** (HTTP 429) | A public rate limit was hit (requests, questions, uploads, new sessions or the server-wide question limit) | Wait for the time shown. The operator can raise the `PUBLIC_*` limits. If all visitors hit it together behind a proxy, `TRUSTED_PROXY_COUNT` is probably wrong: check `client_ip` in `/api/admin/diagnostics` |
+| Upload rejected with **409** | The session already has `PUBLIC_MAX_DOCUMENTS` documents | Delete some documents first |
+| **503 "DocMind is at capacity right now"** | `PUBLIC_MAX_SESSIONS` active sessions | Try later; idle sessions expire after `SESSION_TTL_HOURS` |
+| **403 "Cross-site request blocked"** | A browser request's `Origin` is not this server and not in `CORS_ALLOW_ORIGINS` | Use the bundled UI on the same origin; a proxy must pass the original `Host` header |
+| My documents disappeared | The session expired (idle longer than `SESSION_TTL_HOURS`), cookies were cleared, a different browser was used, or the server restarted on an ephemeral disk | Expected; upload them again. Documents are private to the browser that uploaded them |
+| Documents added with `python main.py ingest` do not appear in the UI | They have no owner, and owner-less documents are never shown to visitors | Upload through the UI instead |
 | **Ask is disabled**, "AI question answering is currently unavailable" | No LLM key configured | Settings → Model → paste an API key → *Test connection*; or set `LLM_API_KEY` in `.env` and restart |
 | *Test connection* fails: "rejected the API key" | Wrong or expired key | Replace the key |
 | *Test connection* fails: "returned HTTP 400" | Wrong model name, or a parameter the model rejects (e.g. `temperature` or `max_tokens` on some OpenAI models, `effort` on models without it) | Check the model name; for Anthropic set Effort to *Default*; see the server log for the provider's message |
@@ -34,4 +41,5 @@
 
 - **Server log** (stdout): processing results, retrieval timings, LLM errors (truncated), storage problems. It never contains document or query text.
 - **`/api/health`**: whether the app is ready and an LLM is configured.
-- **`/api/docs`**: interactive API documentation for trying requests directly.
+- **`/api/admin/diagnostics`** (admin token): sessions, document and chunk counts, rate-limiter keys, and the client IP the limiter sees.
+- **`/api/docs`**: interactive API documentation for trying requests directly (development only unless `API_DOCS=true`).

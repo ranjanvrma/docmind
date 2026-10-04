@@ -25,7 +25,7 @@ def client(tmp_path, fake_embedder):
 def test_get_settings_returns_values_but_never_secrets(tmp_path, fake_embedder):
     svc = _service(tmp_path, fake_embedder, llm_api_key="sk-env-secret")
     with TestClient(create_app(svc)) as c:
-        body = c.get("/api/settings").json()
+        body = c.get("/api/admin/settings").json()
     assert body["values"]["chunk_size"] == 300
     assert "llm_api_key" not in body["values"]
     assert body["llm_api_key"] == {"configured": True, "source": "environment", "withheld": False}
@@ -35,7 +35,7 @@ def test_get_settings_returns_values_but_never_secrets(tmp_path, fake_embedder):
 
 def test_changes_are_validated_persisted_and_survive_restart(tmp_path, fake_embedder):
     with TestClient(create_app(_service(tmp_path, fake_embedder))) as c:
-        response = c.patch("/api/settings", json={"chunk_size": 120, "chunk_overlap": 20, "top_k": 7})
+        response = c.patch("/api/admin/settings", json={"chunk_size": 120, "chunk_overlap": 20, "top_k": 7})
     assert response.status_code == 200
     assert response.json()["values"]["chunk_size"] == 120
     assert set(response.json()["overridden"]) == {"chunk_size", "chunk_overlap", "top_k"}
@@ -65,7 +65,7 @@ def test_changes_are_validated_persisted_and_survive_restart(tmp_path, fake_embe
 def test_invalid_changes_are_rejected_and_nothing_is_saved(tmp_path, fake_embedder, payload, message):
     svc = _service(tmp_path, fake_embedder)
     with TestClient(create_app(svc)) as c:
-        response = c.patch("/api/settings", json=payload)
+        response = c.patch("/api/admin/settings", json=payload)
     assert response.status_code == 422 and message in response.json()["detail"]
     assert not (svc.settings.data_dir / "settings.json").exists()
     assert svc.settings.chunk_size == 300
@@ -73,18 +73,18 @@ def test_invalid_changes_are_rejected_and_nothing_is_saved(tmp_path, fake_embedd
 
 def test_unknown_or_protected_fields_cannot_be_set(client):
     for field in ("api_token", "embedding_model", "data_dir", "cors_allow_origins", "nonsense"):
-        assert client.patch("/api/settings", json={field: "x"}).status_code == 422
+        assert client.patch("/api/admin/settings", json={field: "x"}).status_code == 422
 
 
 def test_api_key_is_write_only_and_can_be_removed(tmp_path, fake_embedder):
     svc = _service(tmp_path, fake_embedder)
     with TestClient(create_app(svc)) as c:
-        saved = c.patch("/api/settings", json={"llm_api_key": "sk-ui-secret"}).json()
+        saved = c.patch("/api/admin/settings", json={"llm_api_key": "sk-ui-secret"}).json()
         assert saved["llm_api_key"] == {"configured": True, "source": "settings", "withheld": False}
-        assert "sk-ui-secret" not in json.dumps(saved) and "sk-ui-secret" not in json.dumps(c.get("/api/settings").json())
+        assert "sk-ui-secret" not in json.dumps(saved) and "sk-ui-secret" not in json.dumps(c.get("/api/admin/settings").json())
         assert c.get("/api/health").json()["llm_configured"] is True
 
-        removed = c.delete("/api/settings/llm-api-key").json()
+        removed = c.delete("/api/admin/settings/llm-api-key").json()
     assert removed["llm_api_key"] == {"configured": False, "source": None, "withheld": False}
     assert svc.settings.llm_api_key == ""
 
@@ -92,8 +92,8 @@ def test_api_key_is_write_only_and_can_be_removed(tmp_path, fake_embedder):
 def test_reset_returns_to_environment_values(tmp_path, fake_embedder):
     svc = _service(tmp_path, fake_embedder)
     with TestClient(create_app(svc)) as c:
-        c.patch("/api/settings", json={"chunk_size": 150})
-        body = c.post("/api/settings/reset").json()
+        c.patch("/api/admin/settings", json={"chunk_size": 150})
+        body = c.post("/api/admin/settings/reset").json()
     assert body["values"]["chunk_size"] == 300 and body["overridden"] == []
     assert not (svc.settings.data_dir / "settings.json").exists()
 
@@ -101,7 +101,7 @@ def test_reset_returns_to_environment_values(tmp_path, fake_embedder):
 def test_upload_request_limit_follows_live_settings(tmp_path, fake_embedder):
     big = b"%PDF-1.4\n" + b"0" * (3 * 1024 * 1024)
     with TestClient(create_app(_service(tmp_path, fake_embedder))) as c:
-        c.patch("/api/settings", json={"max_upload_mb": 1, "max_request_mb": 2})
+        c.patch("/api/admin/settings", json={"max_upload_mb": 1, "max_request_mb": 2})
         response = c.post("/api/documents/upload", files=[("files", ("big.pdf", big, "application/pdf"))])
     assert response.status_code == 413
 
@@ -109,7 +109,7 @@ def test_upload_request_limit_follows_live_settings(tmp_path, fake_embedder):
 def test_classifier_labels_apply_to_new_documents(tmp_path, fake_embedder, sample_pdf):
     svc = _service(tmp_path, fake_embedder)
     with TestClient(create_app(svc)) as c:
-        c.patch("/api/settings", json={"classifier_labels": ["Invoice", "Contract"]})
+        c.patch("/api/admin/settings", json={"classifier_labels": ["Invoice", "Contract"]})
     svc.upload("s.pdf", sample_pdf)
     [(record, _)] = svc.process()
     assert set(record.classification["scores"]) == {"Invoice", "Contract"}
@@ -124,24 +124,24 @@ def test_corrupt_settings_file_is_ignored_at_startup(tmp_path, fake_embedder):
 
 def test_llm_connection_test(tmp_path, fake_embedder):
     with TestClient(create_app(_service(tmp_path, fake_embedder, llm=FakeLLM("OK")))) as c:
-        ok = c.post("/api/settings/test-llm").json()
+        ok = c.post("/api/admin/settings/test-llm").json()
     assert ok["ok"] is True and ok["latency_ms"] is not None
 
     with TestClient(create_app(_service(tmp_path / "b", fake_embedder))) as c:
-        missing = c.post("/api/settings/test-llm").json()
+        missing = c.post("/api/admin/settings/test-llm").json()
     assert missing["ok"] is False and "LLM_API_KEY" in missing["message"]
 
 
 def test_settings_and_evaluation_require_the_token(tmp_path, fake_embedder):
     with TestClient(create_app(_service(tmp_path, fake_embedder, api_token="tok"))) as c:
-        assert c.get("/api/settings").status_code == 401
-        assert c.patch("/api/settings", json={"top_k": 4}).status_code == 401
-        assert c.post("/api/settings/reset").status_code == 401
-        assert c.post("/api/evaluation/retrieval").status_code == 401
+        assert c.get("/api/admin/settings").status_code == 401
+        assert c.patch("/api/admin/settings", json={"top_k": 4}).status_code == 401
+        assert c.post("/api/admin/settings/reset").status_code == 401
+        assert c.post("/api/admin/evaluation/retrieval").status_code == 401
 
 
 def test_evaluation_lab_reports_metrics_for_current_settings(client):
-    response = client.post("/api/evaluation/retrieval", json={"ks": [1, 3]})
+    response = client.post("/api/admin/evaluation/retrieval", json={"ks": [1, 3]})
     assert response.status_code == 200
     body = response.json()
     assert [m["k"] for m in body["metrics"]] == [1, 3]
@@ -151,7 +151,7 @@ def test_evaluation_lab_reports_metrics_for_current_settings(client):
 
 
 def test_evaluation_rejects_bad_k(client):
-    assert client.post("/api/evaluation/retrieval", json={"ks": [0]}).status_code == 422
+    assert client.post("/api/admin/evaluation/retrieval", json={"ks": [0]}).status_code == 422
 
 
 def test_environment_key_is_never_sent_to_an_endpoint_changed_from_the_ui(tmp_path, fake_embedder):
@@ -159,17 +159,17 @@ def test_environment_key_is_never_sent_to_an_endpoint_changed_from_the_ui(tmp_pa
     svc = _service(tmp_path, fake_embedder, llm_provider="openai", llm_api_key="sk-env-secret",
                    llm_base_url="https://openrouter.ai/api/v1")
     with TestClient(create_app(svc)) as c:
-        body = c.patch("/api/settings", json={"llm_base_url": "https://attacker.example/v1"}).json()
+        body = c.patch("/api/admin/settings", json={"llm_base_url": "https://attacker.example/v1"}).json()
         assert body["llm_api_key"] == {"configured": False, "source": "environment", "withheld": True}
         assert svc.settings.llm_api_key == ""
-        assert c.post("/api/settings/test-llm").json()["ok"] is False
+        assert c.post("/api/admin/settings/test-llm").json()["ok"] is False
 
         # Changing the model alone keeps the key; going back to the original endpoint restores it.
-        c.patch("/api/settings", json={"llm_base_url": "https://openrouter.ai/api/v1", "llm_model": "other/model"})
+        c.patch("/api/admin/settings", json={"llm_base_url": "https://openrouter.ai/api/v1", "llm_model": "other/model"})
         assert svc.settings.llm_api_key == "sk-env-secret"
 
         # A key entered for the new endpoint is used there.
-        c.patch("/api/settings", json={"llm_base_url": "https://other.example/v1", "llm_api_key": "sk-new"})
+        c.patch("/api/admin/settings", json={"llm_base_url": "https://other.example/v1", "llm_api_key": "sk-new"})
         assert svc.settings.llm_api_key == "sk-new"
 
     # The rule also holds for overrides loaded at startup.

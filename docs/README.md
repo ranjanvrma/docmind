@@ -28,7 +28,7 @@ DocMind is a retrieval-augmented generation (RAG) application for PDFs: upload d
 
 - [FRONTEND.md](FRONTEND.md): React app structure, data flow, 3D scene, accessibility
 - [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md): tokens, glass, motion, typography
-- [SECURITY.md](SECURITY.md): authentication, limits, prompt injection, secrets
+- [SECURITY.md](SECURITY.md): public and admin endpoints, anonymous sessions, document isolation, rate limits, CSRF, prompt injection, secrets
 - [CONTRIBUTING.md](CONTRIBUTING.md): setup for development, tests, conventions
 
 ## Study and audit material
@@ -45,4 +45,5 @@ These were written while auditing the project for interview preparation. They de
 - Question answering was built and tested with a **scripted stand-in LLM**, then spot-checked end to end against a **live provider** (OpenRouter: one pinned model, and `openrouter/free`, which routed 8 questions to 4 different free models). The Anthropic provider has not been run live, and the QA evaluation script has not been run. See [LLM_INTEGRATION.md](LLM_INTEGRATION.md#verification-status).
 - Memory and load-time figures for the ONNX embedding runtime were measured on the Windows development machine only ([EMBEDDINGS.md](EMBEDDINGS.md#memory-and-load-time)).
 - The Docker image has **not yet been built** in a real Docker environment, so its size and container startup time are unmeasured.
-- There is no automated browser end-to-end test suite.
+- There is no automated browser end-to-end test suite. The public-mode isolation and rate limits were checked in one scripted live run (production mode, two separate cookie jars), not on the real Render deployment; `TRUSTED_PROXY_COUNT=1` on Render is unverified.
+- Visitor isolation rests on an anonymous session cookie, not accounts, and the rate limiter is in-process (single instance only). See [SECURITY.md](SECURITY.md#known-gaps).

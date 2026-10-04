@@ -16,7 +16,7 @@ A two-stage build produces one image that serves the API and the UI on port 8000
 - Copies `app/`, `evaluation/` (used by the Settings page's Evaluation lab), `main.py`, the sample classifier data, and `web/dist` from stage 1.
 - Runs as non-root user `docmind` (UID 1000).
 - `HEALTHCHECK` on `/api/health` at `$PORT` (90 s start period).
-- `ENV APP_ENV=production DATA_DIR=/app/data HOST=0.0.0.0 PORT=8000`: the container **refuses to start without a `DOCMIND_API_TOKEN` of at least 24 characters**, hides the API docs, and listens on `$PORT` (override it for platforms that assign one).
+- `ENV APP_ENV=production DATA_DIR=/app/data HOST=0.0.0.0 PORT=8000`: the container **refuses to start without a `DOCMIND_API_TOKEN` of at least 24 characters** (the administrator token; visitors don't need it), hides the API docs, and listens on `$PORT` (override it for platforms that assign one).
 - `CMD ["python", "main.py", "api"]` (exec form, so SIGTERM reaches uvicorn for a graceful shutdown; the background processing worker stops after its current document). One process only ([DEPLOYMENT.md](DEPLOYMENT.md#6-single-instance-limitation)).
 
 `.dockerignore` keeps `.env`, virtual environments, `node_modules`, user data, tests, docs and git history out of the build context, so no secrets or uploaded documents are baked into the image.
@@ -32,7 +32,7 @@ One service, `docmind`:
 ## Commands
 
 ```bash
-cp .env.example .env                       # set DOCMIND_API_TOKEN (required), optionally LLM_API_KEY
+cp .env.example .env                       # set DOCMIND_API_TOKEN (required, admin only), optionally LLM_API_KEY
 docker compose up --build -d
 docker compose ps                          # wait for "healthy"
 curl http://127.0.0.1:8000/api/health

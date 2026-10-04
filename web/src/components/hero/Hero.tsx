@@ -8,7 +8,7 @@ import { Spotlight } from "@/components/effects/Background";
 import { Button } from "@/components/ui/button";
 import { Badge, Skeleton, StatusDot } from "@/components/ui/primitives";
 import { formatNumber } from "@/lib/format";
-import { useHealth } from "@/lib/queries";
+import { useDocuments, useHealth } from "@/lib/queries";
 
 export function Hero({ onUpload }: { onUpload: () => void }) {
   return (
@@ -49,16 +49,17 @@ export function Hero({ onUpload }: { onUpload: () => void }) {
   );
 }
 
-/** Live numbers from /api/health instead of marketing copy. */
+/** Live numbers for this visitor's own library (documents are private per browser). */
 function WorkspaceStats() {
-  const { data, isLoading } = useHealth();
-  const items: [string, string][] = data
-    ? [
-        ["Documents", formatNumber(data.documents)],
-        ["Indexed passages", formatNumber(data.indexed_chunks)],
-        ["Q&A", data.llm_configured ? "Enabled" : "Search only"],
-      ]
-    : [];
+  const health = useHealth();
+  const documents = useDocuments();
+  const isLoading = health.isLoading || documents.isLoading;
+  const docs = documents.data ?? [];
+  const items: [string, string][] = [
+    ["Your documents", formatNumber(docs.length)],
+    ["Indexed passages", formatNumber(docs.reduce((n, d) => n + (d.status === "processed" ? d.chunk_count : 0), 0))],
+    ["Q&A", health.data ? (health.data.llm_configured ? "Enabled" : "Search only") : "–"],
+  ];
   return (
     <motion.dl variants={fadeUp} aria-label="Workspace status" className="mt-10 grid max-w-md grid-cols-3 gap-4 border-t border-line pt-6 text-xs">
       {isLoading

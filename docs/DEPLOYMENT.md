@@ -8,11 +8,13 @@ Set these on the host or platform (never commit them; `.env` is git- and docker-
 
 | Variable | Why |
 |---|---|
-| `DOCMIND_API_TOKEN` | **Required in production** (`APP_ENV=production` refuses to start without it, or if it is shorter than 24 characters). Without it, anyone who can reach the server can read and delete all documents. Generate: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `DOCMIND_API_TOKEN` | **Required in production** (`APP_ENV=production` refuses to start without it, or if it is shorter than 24 characters). It is the **administrator** credential for `/api/admin/*` (settings, LLM test, evaluation, diagnostics); visitors never need it, and it plays no part in visitor sessions. Generate: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `LLM_API_KEY`, `LLM_MODEL`, `LLM_PROVIDER`, `LLM_BASE_URL` | Question answering. For OpenRouter: `LLM_PROVIDER=openai`, `LLM_BASE_URL=https://openrouter.ai/api/v1`, and either a concrete model ID (most predictable) or the free router `openrouter/free` ([LLM_INTEGRATION.md](LLM_INTEGRATION.md)). |
 | `DATA_DIR` | Must point at **persistent** storage (see §5). `/app/data` in the image. |
 | `APP_ENV` | `production` in the Docker image; `development` otherwise. |
 | `PORT` | Set by most platforms; the app listens on it. |
+| `TRUSTED_PROXY_COUNT` | Number of reverse proxies in front of the app that append to `X-Forwarded-For` (default `0` = use the TCP peer). Needed for per-IP rate limits behind a platform proxy. On Render `1` is the expected value but is **unverified**: after deploying, call `GET /api/admin/diagnostics` and check that `client_ip` is your own public IP. Never set it higher than the real number of proxies, or clients can spoof their IP. |
+| `PUBLIC_*`, `SESSION_TTL_HOURS` | Rate limits and quotas for anonymous visitors (§7a). The defaults suit a small demo. |
 
 Everything else has working defaults ([CONFIGURATION.md](CONFIGURATION.md)). No URL in the app or the UI points at `localhost`: the built UI calls `/api` on its own origin.
 
@@ -23,12 +25,12 @@ cd web && npm ci && npm run build && cd ..
 python main.py api                       # serves UI + API on 127.0.0.1:8000
 ```
 
-`HOST=0.0.0.0` (or `--host 0.0.0.0`) only together with `DOCMIND_API_TOKEN` and, ideally, a reverse proxy.
+`HOST=0.0.0.0` (or `--host 0.0.0.0`) only together with `DOCMIND_API_TOKEN` (protects the admin endpoints) and, ideally, a reverse proxy. Visitors use the public endpoints without a token either way.
 
 ## 3. Docker / Docker Compose
 
 ```bash
-cp .env.example .env    # set DOCMIND_API_TOKEN (+ LLM_* values)
+cp .env.example .env    # set DOCMIND_API_TOKEN (admin) + LLM_* values
 docker compose up --build -d
 ```
 
@@ -46,15 +48,15 @@ Any platform that runs a Dockerfile works: Render, Railway, Fly.io, Hugging Face
 6. Memory: a **512 MB** instance is realistic. On the development machine (Windows) the API process had a working set of about 232 MB after embedding 300 chunks, with a peak of about 346 MB; Linux numbers have not been measured. Very large PDFs raise the peak, so leave headroom or use a larger instance if you process them.
 7. Request timeouts: the web UI processes documents in the background (the request returns HTTP 202 immediately and the UI polls for status), so a short platform or proxy timeout does not cut off processing of a large PDF. Synchronous processing (`"background": false`, the API default) still happens inside one request and can take minutes on a small CPU.
 
-**Free hosting.** DocMind is designed for one small always-on container with a persistent volume at `/app/data`. Platforms such as Render, Hugging Face Spaces, Koyeb, Fly.io, Railway or Google Cloud Run can run the Dockerfile; check the platform's current free tier for memory, disk and sleep rules. Free tiers commonly have ephemeral disks and sleep when idle (cold starts); in that case uploaded documents and the index are lost on restart (§5).
+**Free hosting.** DocMind is designed for one small always-on container with a persistent volume at `/app/data`. Platforms such as Render, Hugging Face Spaces, Koyeb, Fly.io, Railway or Google Cloud Run can run the Dockerfile; check the platform's current free tier for memory, disk and sleep rules. Free tiers commonly have ephemeral disks and sleep when idle (cold starts); in that case uploaded documents, the index and the visitor sessions (`sessions.json`) are lost on restart, redeploy or spin-down (§5). Old cookies then simply mean "no session", and the UI tells visitors their documents are deleted after 24 h of inactivity or when the server restarts.
 
 Platform notes (verify against the platform's current documentation):
 
-- **Render** (Docker web service): Render sets `PORT`, which the image honours. Set the health check path to `/api/health` and add the secrets as environment variables.
+- **Render** (Docker web service): Render sets `PORT`, which the image honours. Set the health check path to `/api/health` and add the secrets as environment variables. Keep `DOCMIND_API_TOKEN` (now admin-only) and the `LLM_*` values; add `TRUSTED_PROXY_COUNT=1`, then verify it with `GET /api/admin/diagnostics` (not yet verified on Render). Optionally tune the `PUBLIC_*` limits and lower `MAX_UPLOAD_MB` / `MAX_PAGES` for the free tier's 512 MB. Render Free has an ephemeral disk: everything is lost on restart, redeploy or spin-down.
 - **Hugging Face Spaces** (Docker SDK): Spaces route traffic to port 7860 unless the Space's README metadata sets `app_port`. Either add the Space variable `PORT=7860`, or set `app_port: 8000`. Spaces run containers as UID 1000, which matches the image's user. Add the secrets as Space secrets.
 - **Any VM** (including always-free cloud VMs): `docker compose up --build -d` with a `.env` file, behind Caddy or nginx for HTTPS (§7). This is the most reliable free option for persistence, because the disk is yours.
 
-**Separately hosted UI (optional).** The default and recommended setup serves the UI from the API (same origin, no CORS). If you host `web/dist` elsewhere, build it with `VITE_API_BASE_URL=https://<api-host>` and set `CORS_ALLOW_ORIGINS=https://<ui-host>` on the API. The CSP for that page is then the static host's responsibility.
+**Separately hosted UI (optional).** The default and recommended setup serves the UI from the API (same origin, no CORS). If you host `web/dist` elsewhere, build it with `VITE_API_BASE_URL=https://<api-host>` and set `CORS_ALLOW_ORIGINS=https://<ui-host>` on the API. The CSP for that page is then the static host's responsibility. **Visitor sessions do not work in this setup**: the session cookie is `SameSite=Strict` and CORS is configured without credentials, so uploads from another origin cannot keep a session. Use the same-origin setup for public use.
 
 ## 5. Persistent storage: what must survive a restart
 
@@ -66,17 +68,18 @@ Do not assume the container filesystem is persistent. On most platforms it is re
 | Document registry (metadata, status, classification) | `DATA_DIR/processed/documents.json` | The app forgets every document |
 | FAISS index + chunk metadata | `DATA_DIR/index/` | Search and Q&A return nothing; with the PDFs still present, *Process pending documents* rebuilds it |
 | Settings saved from the UI (may include an LLM key) | `DATA_DIR/settings.json` | Falls back to environment values |
+| Visitor sessions (hashed IDs and last-seen times only) | `DATA_DIR/sessions.json` | Visitors lose access to their documents; the maintenance sweep then deletes those documents |
 | Trained classifier (optional) | `DATA_DIR/classifier/` | Falls back to zero-shot |
 
 All of these live under one directory, so **one volume at `DATA_DIR` is enough**. Writes are atomic (temp file + rename) and the index is saved before the registry commits, so a crash cannot leave them inconsistent; startup reconciles the two if needed.
 
-**Without a persistent volume** (for example a free tier with an ephemeral disk) the app still runs, but every restart, redeploy or idle spin-down starts with an empty library. That is acceptable only for a throwaway demo; say so to anyone you share it with. Object storage (S3, GCS) is **not** a drop-in replacement: FAISS and the registry need a POSIX filesystem with atomic renames, so a FUSE-mounted bucket is not recommended.
+**Without a persistent volume** (for example a free tier with an ephemeral disk) the app still runs, but every restart, redeploy or idle spin-down starts with an empty library. That is acceptable only for a throwaway demo; say so to anyone you share it with (the upload panel already does). Independently of the disk, sessions idle for `SESSION_TTL_HOURS` (default 24) are deleted together with their documents by a maintenance thread that runs every minute. Object storage (S3, GCS) is **not** a drop-in replacement: FAISS and the registry need a POSIX filesystem with atomic renames, so a FUSE-mounted bucket is not recommended.
 
-Back up the whole `DATA_DIR`, ideally while the app is stopped. Restrict access to it: it contains your documents and possibly a key.
+Back up the whole `DATA_DIR`, ideally while the app is stopped. Restrict access to it: it contains visitors' documents and possibly a key.
 
 ## 6. Single-instance limitation
 
-The FAISS index and the write locks live in process memory. Run **exactly one** process and one replica. Multiple workers or replicas would each hold their own copy of the index and overwrite each other's files. Scaling out would require a shared vector database and a job queue, which DocMind does not have.
+The FAISS index, the write locks, the session store and the rate-limit counters live in process memory. Run **exactly one** process and one replica. Multiple workers or replicas would each hold their own copy of the index and overwrite each other's files, and each would apply the rate limits separately. Scaling out would require a shared vector database, a job queue and a shared rate-limit store, which DocMind does not have.
 
 ## 7. Reverse proxy and HTTPS
 
@@ -93,13 +96,27 @@ docmind.example.com {
 
 With nginx, set `client_max_body_size` similarly and long enough `proxy_read_timeout` values.
 
-**Rate limiting:** DocMind has none. Every `/api/ask` call costs LLM credits, so limit requests at the proxy or platform and set a spending cap in your LLM provider's console.
+**Client IP behind a proxy:** set `TRUSTED_PROXY_COUNT` to the number of proxies that append to `X-Forwarded-For` (one Caddy or nginx in front: `1`), otherwise every visitor shares the proxy's IP for rate limiting.
+
+## 7a. Public-use limits
+
+DocMind applies its own in-process limits to anonymous visitors, per client IP and per session ([SECURITY.md](SECURITY.md#rate-limiting-and-quotas) has the full table). For a small free-tier instance the defaults are a reasonable start:
+
+| Variable | Default | Consider |
+|---|---|---|
+| `PUBLIC_QA_RATE_LIMIT` / `PUBLIC_QA_GLOBAL_LIMIT` | 20 per visitor / 200 overall per hour | Lower the global limit to match your LLM provider's free quota |
+| `PUBLIC_UPLOAD_RATE_LIMIT`, `PUBLIC_MAX_DOCUMENTS`, `PUBLIC_MAX_ACTIVE_JOBS` | 20 files/h, 20 documents, 5 jobs per session | Lower on 512 MB instances |
+| `MAX_UPLOAD_MB`, `MAX_PAGES` | 25 MB, 500 pages | Lower (for example 10 MB / 100 pages) on a free tier to keep processing short |
+| `PUBLIC_MAX_SESSIONS`, `SESSION_TTL_HOURS` | 1000, 24 h | Fewer sessions or a shorter TTL bound disk use |
+
+These limits reset when the process restarts and are not a substitute for a shared limiter if you ever run more than one instance. Every `/api/ask` call still costs LLM credits, so also set a spending cap in your LLM provider's console.
 
 ## 8. Health checks, startup and shutdown
 
-- `GET /api/health` (public) returns `200` when the app is ready (model loaded, index usable) and `503` with an explanation when stored data could not be loaded or `DATA_DIR` is not writable. It reveals no secrets.
+- `GET /api/health` (public) returns `200` when the app is ready (model loaded, index usable) and `503` with an explanation when stored data could not be loaded or `DATA_DIR` is not writable. It is not rate limited and reveals no secrets and no global document counts.
+- `GET /api/admin/diagnostics` (admin token) shows active sessions, document and chunk counts, rate-limiter keys and the client IP as the limiter sees it; use it to check `TRUSTED_PROXY_COUNT`.
 - A configuration error (for example `APP_ENV=production` without a token, or an invalid `CORS_ALLOW_ORIGINS` entry) stops startup with a one-line `Configuration error: …` message.
-- On SIGTERM, uvicorn stops accepting connections and waits up to 30 s for in-flight requests. The background processing worker stops after the document it is working on. Every write is already on disk when its request returns, so nothing needs flushing.
+- On SIGTERM, uvicorn stops accepting connections and waits up to 30 s for in-flight requests. The background processing worker stops after the document it is working on. Every document write is already on disk when its request returns; session last-seen times are flushed on shutdown.
 - Documents still `queued` or `processing` when the process stopped are re-queued automatically on the next start (the statuses are stored in the registry).
 
 ## 9. Recovery
@@ -108,14 +125,15 @@ If `/api/health` returns 503 with an index or registry error, follow the message
 
 ## 10. Security checklist
 
-- [ ] `DOCMIND_API_TOKEN` set (enforced by `APP_ENV=production`); shared only with intended users
+- [ ] `DOCMIND_API_TOKEN` set (enforced by `APP_ENV=production`); known only to the administrator
+- [ ] `TRUSTED_PROXY_COUNT` matches the number of proxies; `client_ip` in `/api/admin/diagnostics` shows your own IP
 - [ ] Secrets set in the platform's secret store; `.env` never committed
 - [ ] HTTPS (platform or reverse proxy)
 - [ ] `DATA_DIR` on a persistent, access-restricted volume, backed up
 - [ ] One instance only, ≥ 512 MB RAM (more for very large PDFs)
 - [ ] If the LLM base URL is changed from the Settings page in production, it must be `https` and resolve to public IP addresses (enforced)
-- [ ] Request size and rate limits at the proxy/platform; LLM provider spending limit
-- [ ] `CORS_ALLOW_ORIGINS` empty unless the UI is hosted on another origin
+- [ ] `PUBLIC_*` limits, `MAX_UPLOAD_MB` and `MAX_PAGES` sized for the instance; LLM provider spending limit
+- [ ] `CORS_ALLOW_ORIGINS` empty (a UI on another origin cannot keep visitor sessions)
 - [ ] `API_DOCS` left off in production unless needed
 
 More in [SECURITY.md](SECURITY.md).

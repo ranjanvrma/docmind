@@ -67,13 +67,16 @@ def test_security_headers_on_api_responses(tmp_path, fake_embedder, fake_llm):
     assert response.headers["referrer-policy"] == "no-referrer"
 
 
-def test_health_reports_limits_and_auth_without_secrets(tmp_path, fake_embedder, fake_llm):
-    with _client(tmp_path, fake_embedder, fake_llm, api_token="tok-secret", max_upload_mb=7, max_pages=42) as client:
+def test_health_reports_limits_without_secrets(tmp_path, fake_embedder, fake_llm):
+    with _client(
+        tmp_path, fake_embedder, fake_llm, api_token="tok-secret", llm_api_key="sk-secret", max_upload_mb=7, max_pages=42,
+        public_max_active_jobs=0,
+    ) as client:
         body = client.get("/api/health").json()
-    assert body["auth_required"] is True
     assert body["limits"]["max_upload_mb"] == 7 and body["limits"]["max_pages"] == 42
     assert body["limits"]["max_files_per_upload"] == 20 and body["limits"]["max_top_k"] == 20
-    assert "tok-secret" not in str(body)
+    assert body["session_ttl_hours"] == 24
+    assert "tok-secret" not in str(body) and "sk-secret" not in str(body) and "auth_required" not in body
 
 
 def test_document_chunks_endpoint(tmp_path, fake_embedder, fake_llm, sample_pdf):
@@ -92,6 +95,12 @@ def test_document_chunks_endpoint(tmp_path, fake_embedder, fake_llm, sample_pdf)
     assert missing.status_code == 404
 
 
-def test_document_chunks_require_the_token(tmp_path, fake_embedder, fake_llm):
-    with _client(tmp_path, fake_embedder, fake_llm, api_token="tok") as client:
-        assert client.get("/api/documents/x/chunks").status_code == 401
+def test_document_chunks_are_private_to_the_uploading_session(tmp_path, fake_embedder, fake_llm, sample_pdf):
+    app = _client(tmp_path, fake_embedder, fake_llm).app
+    with TestClient(app) as alice, TestClient(app) as bob:
+        doc_id = alice.post(
+            "/api/documents/upload", files=[("files", ("s.pdf", sample_pdf, "application/pdf"))]
+        ).json()["items"][0]["doc_id"]
+        alice.post("/api/documents/process", json={})
+        assert alice.get(f"/api/documents/{doc_id}/chunks").status_code == 200
+        assert bob.get(f"/api/documents/{doc_id}/chunks").status_code == 404

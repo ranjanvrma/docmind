@@ -2,7 +2,7 @@
 
 A system that produces fluent answers is not necessarily a good one. DocMind measures **retrieval** (did the right page come back?) separately from **answers** (was the answer correct and grounded?).
 
-Code: `evaluation/evaluate.py` (command line), `POST /api/evaluation/retrieval` (the Settings page's *Evaluation lab*). Both use the same function, `run_retrieval_evaluation`, and index the dataset's PDFs into a **temporary** directory, so the real index is never touched.
+Code: `evaluation/evaluate.py` (command line), `POST /api/admin/evaluation/retrieval` (the admin Settings page's *Evaluation lab*). Both use the same function, `run_retrieval_evaluation`, and index the dataset's PDFs into a **temporary** directory, so the real index is never touched.
 
 ## Dataset
 

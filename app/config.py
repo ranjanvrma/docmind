@@ -8,6 +8,7 @@ populated from a local ``.env`` file (see ``.env.example``).
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -22,6 +23,7 @@ VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 VALID_APP_ENVS = {"development", "production"}
 MAX_CHUNK_SIZE = 1200
 MIN_PRODUCTION_TOKEN_LENGTH = 24
+_COOKIE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _env_str(name: str, default: str) -> str:
@@ -49,7 +51,7 @@ def _env_float(name: str, default: float) -> float:
         raise ValueError(f"Environment variable {name} must be a number, got {raw!r}") from exc
 
 
-def _env_bool(name: str, default: bool) -> bool:
+def _env_bool(name: str, default: bool | None) -> bool | None:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
@@ -108,9 +110,30 @@ class Settings:
     max_pages: int = 500  # per document
     min_chars_per_page: int = 20  # pages with fewer characters are treated as empty
 
-    # API access
-    api_token: str = field(default="", repr=False)  # if set, required on every endpoint except /health
+    # API access. DOCMIND_API_TOKEN protects the administrator endpoints
+    # (/api/admin/*). Public endpoints are used by anonymous visitors, isolated
+    # by a server-issued session cookie (see app/sessions.py).
+    api_token: str = field(default="", repr=False)
     cors_allow_origins: list[str] = field(default_factory=list)  # empty = no CORS headers at all
+
+    # Public (anonymous) use. Limits apply per client IP and per session; 0 disables a limit.
+    public_rate_limit: int = 120  # API requests per window
+    public_rate_window_seconds: int = 60
+    public_qa_rate_limit: int = 20  # questions per QA window
+    public_qa_rate_window_seconds: int = 3600
+    public_qa_global_limit: int = 200  # questions per QA window across all visitors (protects the LLM key's quota)
+    public_upload_rate_limit: int = 20  # files per upload window
+    public_upload_rate_window_seconds: int = 3600
+    public_max_documents: int = 20  # documents stored per session
+    public_max_active_jobs: int = 5  # documents queued or processing per session
+    public_max_sessions: int = 1000  # active anonymous sessions on the server
+    public_new_sessions_per_ip: int = 20  # new sessions per client IP per hour
+    session_ttl_hours: int = 24  # idle sessions (and their documents) are deleted after this
+    session_cookie_name: str = "docmind_session"
+    # How many reverse proxies in front of the app append to X-Forwarded-For.
+    # 0 = use the TCP peer address. Render: 1. Never set it higher than the real
+    # number of proxies, or clients can spoof their IP to dodge rate limits.
+    trusted_proxy_count: int = 0
 
     # Classification
     classifier_labels: list[str] = field(default_factory=lambda: list(DEFAULT_CATEGORIES))
@@ -121,7 +144,11 @@ class Settings:
     # Deployment profile. "production" refuses to start without DOCMIND_API_TOKEN
     # and hides the interactive API docs unless API_DOCS=true.
     app_env: str = "development"
-    api_docs: bool = True  # serve /api/docs and /api/openapi.json
+    api_docs: bool | None = None  # serve /api/docs and /api/openapi.json; None = on in development only
+
+    @property
+    def docs_enabled(self) -> bool:
+        return self.api_docs if self.api_docs is not None else self.app_env != "production"
 
     # Built React UI (web/dist). Served by the API if it exists.
     web_dist_dir: Path = PROJECT_ROOT / "web" / "dist"
@@ -190,13 +217,25 @@ class Settings:
         if self.app_env == "production" and not self.api_token:
             raise ValueError(
                 "APP_ENV=production requires DOCMIND_API_TOKEN; without it anyone who can reach the server "
-                "can read and delete every document"
+                "could change its settings through the admin endpoints"
             )
         if self.app_env == "production" and len(self.api_token) < MIN_PRODUCTION_TOKEN_LENGTH:
             raise ValueError(
                 f"DOCMIND_API_TOKEN must be at least {MIN_PRODUCTION_TOKEN_LENGTH} characters in production. "
                 'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
             )
+        for name in (
+            "public_rate_limit", "public_qa_rate_limit", "public_qa_global_limit", "public_upload_rate_limit",
+            "public_max_documents", "public_max_active_jobs", "public_max_sessions", "public_new_sessions_per_ip",
+            "trusted_proxy_count",
+        ):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name.upper()} must be 0 (disabled) or positive")
+        for name in ("public_rate_window_seconds", "public_qa_rate_window_seconds", "public_upload_rate_window_seconds", "session_ttl_hours"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name.upper()} must be positive")
+        if not _COOKIE_NAME.match(self.session_cookie_name):
+            raise ValueError("SESSION_COOKIE_NAME may contain only letters, digits, '_' and '-'")
         for origin in self.cors_allow_origins:
             if origin == "*" or not origin.startswith(("http://", "https://")) or origin.endswith("/"):
                 raise ValueError(
@@ -246,8 +285,24 @@ def load_settings() -> Settings:
         min_chars_per_page=_env_int("MIN_CHARS_PER_PAGE", Settings.min_chars_per_page),
         classifier_labels=_env_list("CLASSIFIER_LABELS", DEFAULT_CATEGORIES),
         log_level=_env_str("LOG_LEVEL", "INFO").upper(),
+        public_rate_limit=_env_int("PUBLIC_RATE_LIMIT", Settings.public_rate_limit),
+        public_rate_window_seconds=_env_int("PUBLIC_RATE_WINDOW_SECONDS", Settings.public_rate_window_seconds),
+        public_qa_rate_limit=_env_int("PUBLIC_QA_RATE_LIMIT", Settings.public_qa_rate_limit),
+        public_qa_rate_window_seconds=_env_int("PUBLIC_QA_RATE_WINDOW_SECONDS", Settings.public_qa_rate_window_seconds),
+        public_qa_global_limit=_env_int("PUBLIC_QA_GLOBAL_LIMIT", Settings.public_qa_global_limit),
+        public_upload_rate_limit=_env_int("PUBLIC_UPLOAD_RATE_LIMIT", Settings.public_upload_rate_limit),
+        public_upload_rate_window_seconds=_env_int(
+            "PUBLIC_UPLOAD_RATE_WINDOW_SECONDS", Settings.public_upload_rate_window_seconds
+        ),
+        public_max_documents=_env_int("PUBLIC_MAX_DOCUMENTS", Settings.public_max_documents),
+        public_max_active_jobs=_env_int("PUBLIC_MAX_ACTIVE_JOBS", Settings.public_max_active_jobs),
+        public_max_sessions=_env_int("PUBLIC_MAX_SESSIONS", Settings.public_max_sessions),
+        public_new_sessions_per_ip=_env_int("PUBLIC_NEW_SESSIONS_PER_IP", Settings.public_new_sessions_per_ip),
+        session_ttl_hours=_env_int("SESSION_TTL_HOURS", Settings.session_ttl_hours),
+        session_cookie_name=_env_str("SESSION_COOKIE_NAME", Settings.session_cookie_name),
+        trusted_proxy_count=_env_int("TRUSTED_PROXY_COUNT", Settings.trusted_proxy_count),
         app_env=_env_str("APP_ENV", "development").lower(),
-        api_docs=_env_bool("API_DOCS", os.getenv("APP_ENV", "").strip().lower() != "production"),
+        api_docs=_env_bool("API_DOCS", None),
         web_dist_dir=Path(_env_str("WEB_DIST_DIR", str(PROJECT_ROOT / "web" / "dist"))),
     )
     settings.validate()

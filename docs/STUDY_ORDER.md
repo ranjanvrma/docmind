@@ -85,15 +85,15 @@ Rough time budget: 2–3 focused days for stages 1–8, 2 days for 9–13, 1 day
 - **Interview questions:** "How do you know retrieval works?" "Precision vs recall?" (D7, C5, C8, E6)
 
 ### Stage 14. FastAPI
-- **Read:** `app/api.py`, `models.py` (API schemas), `tests/test_api.py`; start `python main.py api` and use `/docs`
-- **Learn:** app factory; `lifespan`; `Depends`; Pydantic validation → 422; `response_model`; exception handlers; sync routes in a thread pool; multipart uploads (and Starlette's temp-file spooling); `202` background processing (`service.enqueue`, the worker thread, restart recovery, `tests/test_background.py`).
-- **Explain before moving on:** every endpoint's method, body, status codes and service call (`docs/API.md`; CODE_WALKTHROUGH Part 9 predates some of them); why routes contain no business logic; the lock order `_write_lock` then `_queue_lock`.
-- **Interview questions:** "List your endpoints." "Status codes?" "Role of Pydantic?" "What if the server restarts during processing?" (G1, G2, B8, H4)
+- **Read:** `app/api.py`, `models.py` (API schemas), `app/sessions.py`, `app/ratelimit.py`, `tests/test_api.py`, `tests/test_public.py`, `docs/SECURITY.md`; start `python main.py api` and use `/api/docs`
+- **Learn:** app factory; `lifespan`; `Depends`; Pydantic validation → 422; `response_model`; exception handlers; sync routes in a thread pool; multipart uploads (and Starlette's temp-file spooling); `202` background processing (`service.enqueue`, the worker thread, restart recovery, `tests/test_background.py`); public vs admin routers; anonymous sessions (HttpOnly, SameSite=Strict cookie, only the hash stored); owner-scoped queries; sliding-window rate limiting and `Retry-After`; `X-Forwarded-For` and `TRUSTED_PROXY_COUNT`; the Origin check as CSRF defence.
+- **Explain before moving on:** every endpoint's method, body, status codes and service call (`docs/API.md`; CODE_WALKTHROUGH Part 9 predates some of them); why routes contain no business logic; the lock order `_write_lock` then `_queue_lock`; why another visitor's document returns `404` rather than `403`; what the rate limiter cannot do (several instances, restarts, shared NAT).
+- **Interview questions:** "List your endpoints." "Status codes?" "Role of Pydantic?" "What if the server restarts during processing?" "How do you keep visitors' documents apart without accounts?" "How is abuse limited?" (G1, G2, B8, H4, and the public-mode questions in INTERVIEW_PREP)
 
 ### Stage 15. Web frontend (React)
 - **Read:** `docs/FRONTEND.md`, then `web/src/lib/api.ts`, `lib/errors.ts`, `lib/markdown.ts`, `components/qa/AnswerContent.tsx`, `components/citations/CitationChip.tsx`, `components/upload/UploadZone.tsx`, `pages/SettingsPage.tsx`; run `cd web && npm run dev`
 - **Learn:** React components and hooks; TanStack Query (including conditional polling); same-origin API calls and the Vite proxy; why untrusted text is rendered as React text; Motion basics and reduced motion; route code-splitting with React Router `lazy`; how the 3D scene is lazy-loaded with a fallback.
-- **Explain before moving on:** each flow (upload with real progress, then background processing with live status; search; ask with citation chips and grounding badges; settings + evaluation lab); why the token never lives in the bundle; why 5xx error details are hidden; why the pipeline view doesn't show fake percentages; how an unverified reply is shown.
+- **Explain before moving on:** each flow (upload with real progress, then background processing with live status; search; ask with citation chips and grounding badges; settings + evaluation lab behind administrator sign-in); why visitors send no token and the admin token lives only in memory, never in the bundle or browser storage; why 5xx error details are hidden; why the pipeline view doesn't show fake percentages; how an unverified reply is shown.
 - **Interview questions:** "How does the web UI talk to the backend?" (G3)
 
 ### Stage 16. Docker

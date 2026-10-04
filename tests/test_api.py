@@ -20,8 +20,9 @@ def test_health(client):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["documents"] == 0 and body["indexed_chunks"] == 0
     assert body["llm_configured"] is True  # fake LLM injected
+    # Health is public: it must not reveal anything about other visitors' documents.
+    assert "documents" not in body and "indexed_chunks" not in body
 
 
 def test_full_flow_upload_process_search_ask(client, sample_pdf):
@@ -106,7 +107,7 @@ def test_get_and_delete_document(client, sample_pdf):
 
     assert client.delete(f"/api/documents/{doc_id}").status_code == 204
     assert client.get(f"/api/documents/{doc_id}").status_code == 404
-    assert client.get("/api/health").json()["indexed_chunks"] == 0
+    assert client.get("/api/documents").json() == []
     assert client.delete(f"/api/documents/{doc_id}").status_code == 404
 
 

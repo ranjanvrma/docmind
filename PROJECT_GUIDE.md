@@ -2,7 +2,7 @@
 
 This guide explains DocMind from the inside: what each file does, why it was built that way, the maths behind it, how it fails, and what an interviewer is likely to ask. Every section points at real code. Open the file next to the section as you read.
 
-**Suggested study order:** `app/service.py` (the whole pipeline in one place) → `ingestion.py` → `preprocessing.py` → `chunking.py` → `embeddings.py` → `vector_store.py` → `retrieval.py` → `prompts.py` → `qa.py` → `llm.py` → `classifier.py` → `api.py` → `runtime_settings.py` → `evaluation/evaluate.py` → `web/src/lib/` (API client, safe Markdown, citations) → `web/src/pages/`. Run `notebooks/pipeline_walkthrough.ipynb` alongside to see the intermediate outputs.
+**Suggested study order:** `app/service.py` (the whole pipeline in one place) → `ingestion.py` → `preprocessing.py` → `chunking.py` → `embeddings.py` → `vector_store.py` → `retrieval.py` → `prompts.py` → `qa.py` → `llm.py` → `classifier.py` → `api.py` → `sessions.py` → `ratelimit.py` → `runtime_settings.py` → `evaluation/evaluate.py` → `web/src/lib/` (API client, safe Markdown, citations) → `web/src/pages/`. Run `notebooks/pipeline_walkthrough.ipynb` alongside to see the intermediate outputs.
 
 ---
 
@@ -11,7 +11,7 @@ This guide explains DocMind from the inside: what each file does, why it was bui
 DocMind has three layers:
 
 1. **Frontend** (`web/`): a React + TypeScript single-page app containing no ML code. Every action is an HTTP request to the API under `/api`. In production, FastAPI also serves the built app, so the UI and API share one origin.
-2. **API** (`app/api.py`): FastAPI routes. Each route validates input with a Pydantic model (`app/models.py`), calls one method on `DocMindService`, and converts domain exceptions into HTTP status codes.
+2. **API** (`app/api.py`): FastAPI routes in two groups: **public** routes for anonymous visitors (no token; each visitor is a cookie session that sees only its own documents; rate limited) and **admin** routes under `/api/admin/*` (settings, evaluation, diagnostics; `DOCMIND_API_TOKEN`). Each route validates input with a Pydantic model (`app/models.py`), calls one method on `DocMindService` (passing the visitor's owner key), and converts domain exceptions into HTTP status codes. See §25.
 3. **Core pipeline** (`app/*.py`): plain Python modules, each doing one job, orchestrated by `DocMindService` in `app/service.py`.
 
 ```
@@ -28,19 +28,20 @@ Why this split? The service can be used without HTTP: the CLI (`main.py ingest`)
 | File | Written by | Contents |
 |---|---|---|
 | `raw/<doc_id>.pdf` | `service.upload` | the uploaded bytes |
-| `processed/documents.json` | `registry.py` | one record per document: filename, status, pages, chunk count, classification, errors |
+| `processed/documents.json` | `registry.py` | one record per document: owner key, filename, status, pages, chunk count, classification, errors |
 | `index/index.faiss` | `vector_store.save` | serialised FAISS index (vectors + integer IDs) |
 | `index/metadata.json` | `vector_store.save` | integer ID → chunk text, doc ID, doc name, page, chunk ID |
 | `index/manifest.json` | `vector_store.save` | embedding model name, dimension, next ID, vector count (consistency check) |
 | `classifier/classifier.joblib` | `main.py train-classifier` | trained logistic regression + name of the embedding model it expects (optional; needs `requirements-train.txt`) |
 | `settings.json` | `runtime_settings.py` | values saved from the Settings page (override `.env`) |
+| `sessions.json` | `sessions.py` | owner keys (hashed session IDs) with created/last-seen times; never the cookie values |
 
 ## 2. Data flow
 
 ```
 PDF bytes
  │ validate_pdf_upload()        extension, %PDF magic bytes, size ≤ MAX_UPLOAD_MB
- │ compute_document_id()        sha256(bytes)[:16]  → duplicate detection
+ │ compute_document_id()        sha256(owner + NUL + bytes)[:16]  → per-visitor duplicate detection
  ▼
 extract_pages()                 PyMuPDF, page.get_text("text", sort=True) per page
  │  → [PageText(doc_id, doc_name, page_number, text)], empty_pages, warnings
@@ -114,8 +115,8 @@ A thread-safe dict of `DocumentRecord`, persisted to one JSON file with atomic w
 
 **Background processing.** `enqueue` marks documents `queued` and puts their IDs on an in-memory queue; a single daemon worker thread takes them one at a time, sets `processing`, and calls the same `process` under the same write lock. The API uses it when `ProcessRequest.background` is true (HTTP 202); the web UI always does, while the CLI, tests and scripts use the synchronous default. Because `queued`/`processing` are persisted in the registry, `_resume_interrupted_processing` re-queues such documents at startup. `shutdown` stops the worker after the current document. `delete_document` takes `_write_lock` then `_queue_lock` (the same order everywhere), and the worker re-checks the record under `_queue_lock`, so a document deleted while queued is never resurrected.
 
-### `api.py`, `runtime_settings.py`, `web/`, `evaluation/evaluate.py`
-Covered in §22, §23 and §20.
+### `api.py`, `sessions.py`, `ratelimit.py`, `runtime_settings.py`, `web/`, `evaluation/evaluate.py`
+Covered in §22, §25, §23 and §20.
 
 ## 4. Why each technology
 
@@ -181,7 +182,7 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 
 ## 7. Important design decisions
 
-1. **Content-hash document IDs.** Duplicate detection comes for free, and stored filenames are hashes, so path traversal via filenames is impossible.
+1. **Owner-scoped content-hash document IDs.** The ID hashes the visitor's owner key plus the bytes, so duplicate detection works within a session, two visitors uploading the same PDF get separate documents, and stored filenames are hashes, so path traversal via filenames is impossible.
 2. **Chunks never cross pages.** Page citations are always exact. The cost is split context at page breaks.
 3. **Normalised embeddings + inner-product index.** Scores are directly interpretable as cosine similarity.
 4. **`IndexIDMap2` + never-reused IDs.** Documents can be deleted or re-processed without rebuilding the index, and metadata can never be attached to the wrong vector.
@@ -251,9 +252,9 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 
 **Q: How does the classifier work, and how accurate is it?** See §21. On accuracy: the only measured number is 5-fold cross-validation on 48 synthetic training texts (0.81), which says little about real documents. The zero-shot mode has no measured accuracy.
 
-**Q: What happens if two users upload at the same time?** Uploads are independent (content-addressed files). Processing (synchronous or on the single background worker) and deletion are serialised by a lock inside one process. Multiple API worker processes would *not* share that lock or the in-memory index; that is a known single-process limitation. A real deployment would use a vector database and a job queue.
+**Q: What happens if two users upload at the same time?** Uploads are independent (owner-scoped, content-addressed files), and each visitor only ever sees their own documents (§25). Processing (synchronous or on the single background worker) and deletion are serialised by a lock inside one process. Multiple API worker processes would *not* share that lock or the in-memory index; that is a known single-process limitation. A real deployment would use a vector database and a job queue.
 
-**Q: How did you handle security?** API keys only from the environment, never logged and hidden from `Settings.__repr__`; an optional shared API token (`DOCMIND_API_TOKEN`, constant-time comparison, `/api/health` exempt; required and at least 24 characters in production); the environment's LLM key is withheld if the endpoint is changed from the UI; in production, UI-set LLM base URLs must be `https` and resolve only to public IP addresses (SSRF guard, checked when saved, so DNS rebinding afterwards is not covered); CORS off unless explicit origins are configured; content-hash storage names (no path traversal); `sanitize_filename` for display names; the upload request size is checked from `Content-Length` *before* the body is read (413/411), then per-file size, magic bytes and a page-count limit; PDFs are parsed, never executed; prompt-injection mitigations (untrusted-source rule, delimiter sanitising of text and filenames, literal rendering in the UI so injected links/images never load); query text and document content are not logged. Known gaps: no rate limiting or per-user accounts; prompt injection is mitigated, not solved; the PDF parser is not sandboxed; and `joblib` model files must be trusted (pickle).
+**Q: How did you handle security?** See §25 for the public-mode model: anonymous HttpOnly cookie sessions, owner-scoped queries, per-IP and per-session rate limits, an Origin check against CSRF, and an admin token (`DOCMIND_API_TOKEN`, constant-time comparison, failed attempts throttled; required and at least 24 characters in production) that protects only `/api/admin/*`. Beyond that: API keys only from the environment, never logged and hidden from `Settings.__repr__`; the environment's LLM key is withheld if the endpoint is changed from the UI; in production, UI-set LLM base URLs must be `https` and resolve only to public IP addresses (SSRF guard, checked when saved, so DNS rebinding afterwards is not covered); CORS off unless explicit origins are configured; content-hash storage names (no path traversal); `sanitize_filename` for display names; the upload request size is checked from `Content-Length` *before* the body is read (413/411), then per-file size, magic bytes and a page-count limit; PDFs are parsed, never executed; prompt-injection mitigations (untrusted-source rule, delimiter sanitising of text and filenames, literal rendering in the UI so injected links/images never load); query text and document content are not logged. Known gaps: no accounts (a stolen session cookie gives access to that session's documents); the rate limiter is in-process, so it resets on restart and suits one instance only; visitors behind one NAT share per-IP limits; prompt injection is mitigated, not solved; the PDF parser is not sandboxed; and `joblib` model files must be trusted (pickle).
 
 **Q: What would you improve first?** Hybrid retrieval + re-ranking, measured on a real evaluation set; then OCR, then claim-level citation checking. (Background processing, once on this list, now exists.)
 
@@ -262,8 +263,8 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 ## 12. Internals: uploading a PDF
 
 1. The UI's drop zone (`web/src/components/upload/UploadZone.tsx`) sends `POST /api/documents/upload` as multipart form data with `XMLHttpRequest`, which reports real upload progress.
-2. Starlette receives each file and spools it to a temporary file. `api.upload_documents` then reads at most `MAX_UPLOAD_MB` + 1 bytes into memory and calls `service.upload(name, data)`. Note that the whole upload has already reached the server by then; the limit caps memory use, not network or disk use.
-3. `service.upload` runs `sanitize_filename` (strips directories and odd characters), `validate_pdf_upload` (extension, `%PDF-`, size), then `compute_document_id` (SHA-256 prefix). If the registry already has that ID, it returns `duplicate`. Otherwise it writes `data/raw/<doc_id>.pdf` atomically and saves a `DocumentRecord(status="uploaded")`.
+2. Starlette receives each file and spools it to a temporary file. `api.upload_documents` checks the upload rate limits, creates the visitor's session on their first upload (`ensure_session`: new-sessions-per-IP limit, `PUBLIC_MAX_SESSIONS`, then the `Set-Cookie`), then reads at most `MAX_UPLOAD_MB` + 1 bytes into memory and calls `service.upload(name, data, owner)`. Note that the whole upload has already reached the server by then; the limit caps memory use, not network or disk use.
+3. `service.upload` runs `sanitize_filename` (strips directories and odd characters), `validate_pdf_upload` (extension, `%PDF-`, size), then `compute_document_id` (SHA-256 prefix of owner key + bytes). If the registry already has that ID for this owner, it returns `duplicate`. Otherwise it checks the session's document quota (`PUBLIC_MAX_DOCUMENTS`, 409 when every file in the request hits it), then writes `data/raw/<doc_id>.pdf` atomically and saves a `DocumentRecord(status="uploaded", owner=...)`.
 4. The UI then calls `POST /api/documents/process {"doc_ids": [...], "background": true}`, which returns 202 at once after `service.enqueue` marks the documents `queued`. The background worker sets each to `processing` and calls `service.process` → `_process_one` (a synchronous request, as used by the CLI and tests, calls `service.process` directly):
    1. `store.remove_document(doc_id)` (a no-op the first time; prevents duplicates on re-processing).
    2. `extract_pages`: PyMuPDF text per page; empty pages recorded; warnings for scanned files.
@@ -280,14 +281,14 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 
 1. The UI sends `POST /api/search {"query", "top_k", "doc_ids"}`.
 2. Pydantic `SearchRequest` rejects a blank query or a `top_k` outside 1–20 with 422 before any code runs.
-3. `service.search` → `Retriever.search` → `embedder.embed_query(query)`: one 1 × 384 unit vector, using the *same model* as the chunks (essential, because vectors from different models are not comparable).
-4. `store.search(vector, k)` → FAISS computes the inner product with every stored vector and returns the top-k scores and IDs (IDs of −1 mean padding and are skipped).
+3. `service.search` first works out the visitor's scope (their processed documents, or the requested `doc_ids` if all are theirs; otherwise 404). An empty scope returns no results without searching. Then `Retriever.search` → `embedder.embed_query(query)`: one 1 × 384 unit vector, using the *same model* as the chunks (essential, because vectors from different models are not comparable).
+4. `store.search(vector, k)` → FAISS computes the inner product with every stored vector and returns the top-k scores and IDs (IDs of −1 mean padding and are skipped), keeping only chunks from documents in the visitor's scope.
 5. Each ID is mapped to its metadata → `Chunk` → `SearchResult(score, rank)`.
 6. The API returns `SearchHit` objects (score rounded to 4 decimals, document name, page, chunk text), and the UI renders each as an expandable passage.
 
 ## 14. Internals: asking a question
 
-1. `POST /api/ask` → `service.ask` → `self.llm` (created on first use; `LLMNotConfiguredError` → 503).
+1. `POST /api/ask` checks the per-visitor question limit and, if the visitor has processed documents, the server-wide one (429), then `service.ask` → `self.llm` (created on first use; `LLMNotConfiguredError` → 503). A visitor with no processed documents gets the not-found answer without any search or LLM call.
 2. `answer_question` runs the same retrieval as §13, then `select_passages` drops passages below `MIN_RELEVANCE` (0.15) and exact duplicates.
 3. If nothing remains, it returns `NOT_FOUND_ANSWER` and never calls the LLM.
 4. `build_context` numbers the chunks `[Source 1…n]` with document and page, stopping at `MAX_CONTEXT_CHARS`.
@@ -376,19 +377,19 @@ How to do it properly: collect real documents; have other people write questions
 - `create_app(service=None)` is an **app factory**. When the API runs normally (not under test), a `lifespan` handler builds one `DocMindService` at startup (loading the model and index once) and stores it on `app.state`. If the index cannot be loaded, it stores the error instead, and `get_service` answers every request with 503 and that message. Tests pass in a service built with the fake encoder and fake LLM.
 - Routes get the service through `Depends(get_service)` (FastAPI dependency injection).
 - **Validation:** request bodies are Pydantic models (`SearchRequest`, `AskRequest`, `ProcessRequest` with `doc_ids`, `force` and `background`) with field constraints (`min_length`, `ge`/`le` bounds, a custom non-blank validator). FastAPI returns **422** automatically when validation fails.
-- **Middleware:** `UploadSizeLimitMiddleware` rejects `POST /api/documents/upload` requests whose `Content-Length` exceeds `MAX_REQUEST_MB` (413), or that have no `Content-Length` (411), before the multipart body is parsed. `CORSMiddleware` is added only if `CORS_ALLOW_ORIGINS` is set. `require_token` (a dependency on every route except `/api/health`) enforces `DOCMIND_API_TOKEN` when it is set.
-- **Status codes:** 201 upload, 202 background processing accepted, 400 all files rejected, 401 missing/invalid token, 404 unknown document, 411/413 upload request size, 204 delete, 422 invalid input, 502 upstream LLM failure, 503 LLM not configured or search index unavailable (every endpoint, if the index could not be loaded at startup), 500 internal errors (logged with a traceback; the client gets a generic message).
+- **Middleware:** `UploadSizeLimitMiddleware` rejects `POST /api/documents/upload` requests whose `Content-Length` exceeds `MAX_REQUEST_MB` (413), or that have no `Content-Length` (411), before the multipart body is parsed. `CORSMiddleware` is added only if `CORS_ALLOW_ORIGINS` is set. Routes are split into a `public` router and an `admin` router. The `visitor` dependency on public routes runs the Origin check, resolves the session cookie to an owner key and applies the general rate limit; `require_admin` on the admin router runs the Origin check and enforces `DOCMIND_API_TOKEN` (open only in development without a token).
+- **Status codes:** 201 upload, 202 background processing accepted, 400 all files rejected, 401 missing/invalid admin token, 403 cross-site browser request, 404 unknown or another visitor's document, 409 document quota reached, 429 rate limit (with `Retry-After`), 411/413 upload request size, 204 delete, 422 invalid input, 502 upstream LLM failure, 503 LLM not configured, session capacity reached, or search index unavailable (every endpoint, if the index could not be loaded at startup), 500 internal errors (logged with a traceback; the client gets a generic message).
 - **Sync vs async:** CPU-bound routes (search, process) are plain `def`, so FastAPI runs them in a thread pool and they don't block the event loop. Upload is `async def` because it awaits `UploadFile.read`.
-- Response models (`response_model=...`) define the output schema and appear in the auto-generated docs at `/docs`.
+- Response models (`response_model=...`) define the output schema and appear in the auto-generated docs at `/api/docs` (development only unless `API_DOCS=true`).
 
 ## 23. How the web UI communicates with the backend
 
-The React app (`web/`) talks to the API only through `web/src/lib/api.ts`, using `fetch` to the **same origin** under `/api`. In development, Vite proxies `/api` to the backend; in production, FastAPI serves `web/dist` itself. So there is no CORS, and no API URL or token is compiled into the bundle.
+The React app (`web/`) talks to the API only through `web/src/lib/api.ts`, using `fetch` to the **same origin** under `/api`. In development, Vite proxies `/api` to the backend; in production, FastAPI serves `web/dist` itself. So there is no CORS, the `SameSite=Strict` session cookie works, and no API URL or token is compiled into the bundle.
 
-- **Server state** lives in TanStack Query (`lib/queries.ts`): `health` (refreshed every 20 s; the home hero shows its live document, passage and Q&A status), `documents` (polled every 1.5 s only while a document is `queued` or `processing`), document details and chunks, and settings. Mutations (delete, re-index, save settings) invalidate what they change.
+- **Server state** lives in TanStack Query (`lib/queries.ts`): `health` (refreshed every 20 s; Q&A status, limits and `session_ttl_hours`), `documents` (the home hero shows the visitor's own document and passage counts from it; (polled every 1.5 s polled only while a document is `queued` or `processing`), document details and chunks, and (for the administrator) settings. Mutations (delete, re-index, save settings) invalidate what they change.
 - **Code splitting:** every route except Home is loaded on demand with React Router `lazy` (main chunk 92 KB gzipped, down from 229 KB); the 3D hero chunk loads only on the home page on desktop widths with motion allowed and WebGL available.
-- **Authentication:** if `/api/health` reports `auth_required`, or any call returns 401, the token dialog asks the user for the access token. It is stored in the browser (session or local storage) and sent as `X-API-Key`.
-- **Errors** become `ApiError` objects with a friendly message (`lib/errors.ts`). Server details are shown only for 4xx responses, which the API writes for users; 5xx details, which may contain internal paths, are never displayed.
+- **Identity:** visitors send no token. Requests use `credentials: "same-origin"`, so the HttpOnly session cookie is sent automatically and JavaScript never sees it. The administrator signs in on the Settings page; that token is kept in memory for the page only (never in `localStorage`/`sessionStorage`), sent as `X-API-Key` only to `/api/admin/*`, and reloading signs out. The old token dialog is gone, and the stale `docmind.token` key from older versions is removed.
+- **Errors** become `ApiError` objects with a friendly message (`lib/errors.ts`). Server details are shown only for 4xx responses, which the API writes for users (a 429 also says how long to wait, from `Retry-After`; 409 quota and 503 capacity get friendly messages); 5xx details, which may contain internal paths, are never displayed.
 - **Uploads** use `XMLHttpRequest` for real byte progress; processing then runs in the background and each upload result follows the document's live status. The server reports no per-stage progress, so the pipeline view shows the processing stages as one indeterminate step.
 - **Answer badges** come from the server's `grounding`, not from parsing the answer in the browser.
 - **Untrusted text** (passages, answers, filenames) is always rendered as React text. Answers go through a tiny Markdown subset (`lib/markdown.ts`) that never produces links, images or HTML; `[n]` markers become interactive citation chips.
@@ -403,5 +404,83 @@ See `docs/FRONTEND.md` for the full structure.
 - **`Dockerfile`**: `python:3.11-slim` base; **no PyTorch**; installs `requirements.txt` (ONNX Runtime, `tokenizers`, `huggingface_hub`, …); **pre-downloads only the four model files** the encoder needs (`onnx/model.onnx`, `tokenizer.json`, `sentence_bert_config.json`, `1_Pooling/config.json`, about 90 MB) with `hf_hub_download` and sets `HF_HUB_OFFLINE=1`, so containers should start without network access; installs runtime dependencies only (scikit-learn/joblib live in `requirements-train.txt`, pytest in `requirements-dev.txt`). The image size has not been measured, but without PyTorch it should be far smaller than the earlier PyTorch-based design. It also copies only the code it needs; runs as non-root user `docmind` (UID 1000); has a `HEALTHCHECK`; and runs Uvicorn with exactly one worker, because the index lives in process memory.
 - **`docker-compose.yml`**: one service. The image is built in two stages (Node builds `web/dist`; Python serves it plus the API), so a single container serves everything on port 8000, published on `127.0.0.1` only. It reads `.env` (optional), mounts `./data` so uploads, indexes and saved settings survive restarts, and health-checks `/api/health`.
 - **`.dockerignore`** keeps `.env`, the virtual environment, user data and git history out of the build context, so no secrets or uploaded documents are baked into the image.
-- The image runs with `APP_ENV=production` (so it refuses to start without a `DOCMIND_API_TOKEN` of at least 24 characters), listens on `$PORT`, and keeps all state in `DATA_DIR=/app/data`, which must be a persistent volume on a cloud host (see `docs/DEPLOYMENT.md`). With ONNX Runtime a 512 MB instance is realistic (about 232 MB working set after embedding 300 chunks, 346 MB peak, measured on Windows, not in a container); very large PDFs raise the peak.
+- The image runs with `APP_ENV=production` (so it refuses to start without an admin `DOCMIND_API_TOKEN` of at least 24 characters), listens on `$PORT`, and keeps all state in `DATA_DIR=/app/data`, which must be a persistent volume on a cloud host (see `docs/DEPLOYMENT.md`). With ONNX Runtime a 512 MB instance is realistic (about 232 MB working set after embedding 300 chunks, 346 MB peak, measured on Windows, not in a container); very large PDFs raise the peak.
 - The app runs without Docker (`python main.py api`), and that is the only way it has actually been run. Open questions for the first real build: whether the build succeeds, whether the non-root user can write to the `./data` bind mount on Linux hosts, and whether the model loads offline.
+
+## 25. Public user mode and the security model
+
+DocMind is a public demo: anyone with the URL can upload PDFs, search and ask questions without signing in. This section explains how that is made reasonably safe, and where it stops. It is a sensible model for one small instance, not enterprise-grade security. Code: `app/api.py`, `app/sessions.py`, `app/ratelimit.py`, `app/service.py`; tests: `tests/test_public.py`. Full reference: `docs/SECURITY.md`.
+
+### Public user mode
+
+Visitors use every document, search and Q&A endpoint without a token. Server-side configuration (model, retrieval settings, limits, the LLM key) lives behind the admin endpoints, which visitors cannot reach. On the Settings page visitors see only "This browser" (theme, motion), the note "Server settings (model, retrieval, limits) are managed by the administrator", and an *Administrator sign-in* link.
+
+### Public vs admin endpoints
+
+| Surface | Endpoints | Access |
+|---|---|---|
+| Public | `GET /api/health`; `POST /api/documents/upload`; `POST /api/documents/process`; `GET /api/documents`; `GET /api/documents/{id}`; `GET /api/documents/{id}/chunks`; `DELETE /api/documents/{id}`; `POST /api/search`; `POST /api/ask` | No token. Scoped to the visitor's session. Rate limited, except `/api/health`. |
+| Admin | `GET`/`PATCH /api/admin/settings`; `DELETE /api/admin/settings/llm-api-key`; `POST /api/admin/settings/reset`; `POST /api/admin/settings/test-llm`; `POST /api/admin/evaluation/retrieval`; `GET /api/admin/diagnostics` | `DOCMIND_API_TOKEN` as `X-API-Key` or `Authorization: Bearer`. |
+
+The old `/api/settings*` and `/api/evaluation/retrieval` paths no longer exist (404). `/api/health` returns `status`, `version`, `embedding_model`, `llm_provider`, `llm_model`, `llm_configured`, `session_ttl_hours` and `limits` (`max_upload_mb`, `max_request_mb`, `max_pages`, `max_files_per_upload`, `max_documents`, `default_top_k`, `max_top_k`); it no longer returns global document or chunk counts, which would reveal other visitors' activity. `/api/admin/diagnostics` returns `version`, `client_ip` (as the rate limiter sees it), `forwarded_for_entries`, `trusted_proxy_count`, `active_sessions`, `documents`, `documents_without_owner`, `documents_by_status`, `indexed_chunks` and `rate_limiter_keys`, and no secrets.
+
+### Why `DOCMIND_API_TOKEN` still exists
+
+It is now only the administrator credential. Someone has to be able to change the model, test the LLM connection, run the evaluation lab and read diagnostics, and none of that should be open to the public: the settings control where the server's LLM key is sent and how much work each request costs. So `/api/admin/*` requires the token (constant-time comparison; after 10 failed attempts from one IP in 15 minutes further attempts get 429, and a correct token is never throttled). Without a token configured, admin routes are open, which is allowed only in development; `APP_ENV=production` refuses to start without a token of at least 24 characters. The token has nothing to do with visitor identity. In the UI it is held in memory for the current page only and sent only to `/api/admin/*`.
+
+### Anonymous session isolation
+
+- **Lazy creation.** A session is created on a visitor's first upload. Reads and searches never create one, so casual browsing leaves nothing on the server.
+- **Server-chosen identity.** The ID is `secrets.token_urlsafe(32)` (256 random bits), sent in the cookie `docmind_session` (`SESSION_COOKIE_NAME`): `HttpOnly`, `SameSite=Strict`, `Path=/api`, `Max-Age = SESSION_TTL_HOURS × 3600`, and `Secure` on HTTPS or when `APP_ENV=production` on a non-loopback host (so `docker compose` on `http://127.0.0.1` still works). The expiry slides with activity. Unknown, malformed or expired cookies mean "no session"; clients cannot choose an identity.
+- **Only a hash is stored.** `sessions.json` holds `sha256(id)[:32]`, the *owner key*, with created/last-seen times (atomic writes; last-seen flushed at most every 5 minutes and on shutdown). A leaked data directory does not contain usable cookies.
+- **Ownership on every document.** `DocumentRecord.owner` is the owner key (never returned by the API). Document IDs are `sha256(owner + NUL + content)[:16]`, so the same PDF uploaded by two visitors gives two separate documents.
+- **Every query is scoped.** Each public route passes the session's owner to the service. A request without a session uses the sentinel owner `-`, which matches no document, so a missing session can never become an unscoped query. Another visitor's document behaves exactly like a missing one (404) for get, chunks, delete, process, and search/ask with `doc_ids`. Unfiltered search and ask cover only the visitor's processed documents (FAISS results are filtered to their IDs); with none, no search or LLM call happens. Owner-less documents (from `python main.py ingest`, or uploaded before this version) are never visible to visitors.
+- **Cleanup.** A maintenance thread runs every 60 s: it deletes sessions idle longer than `SESSION_TTL_HOURS` (default 24) with all their documents (vectors, registry entries, PDFs), and documents whose session no longer exists. At startup, stored PDFs without a registry entry are removed.
+- **No secrets in browser storage.** The cookie is HttpOnly; the frontend stores only theme and motion preferences.
+
+### Rate limiting
+
+`app/ratelimit.py` is an in-process sliding-window counter. Each public request is counted against the client IP **and** the session, so neither dropping the cookie nor sharing it escapes the limits. Over a limit: 429 with `Retry-After` and a user-facing message, which the UI turns into "Too many requests. Please try again in N seconds/minutes." `0` disables a limit.
+
+| Limit | Default | Purpose |
+|---|---|---|
+| `PUBLIC_RATE_LIMIT` per `PUBLIC_RATE_WINDOW_SECONDS` | 120 / 60 s | all public API requests except `/api/health` |
+| `PUBLIC_QA_RATE_LIMIT` per `PUBLIC_QA_RATE_WINDOW_SECONDS` | 20 / 3600 s | questions per visitor |
+| `PUBLIC_QA_GLOBAL_LIMIT` per QA window | 200 | questions from all visitors together, counted only when the visitor has processed documents; protects the server's OpenRouter quota |
+| `PUBLIC_UPLOAD_RATE_LIMIT` per `PUBLIC_UPLOAD_RATE_WINDOW_SECONDS` | 20 files / 3600 s | uploads |
+| `PUBLIC_NEW_SESSIONS_PER_IP` | 20 per hour | stops cookie-dropping to reset limits |
+| `PUBLIC_MAX_SESSIONS` | 1000 | active sessions; then 503 "DocMind is at capacity right now" |
+| `PUBLIC_MAX_DOCUMENTS` | 20 | documents per session; then 409 |
+| `PUBLIC_MAX_ACTIVE_JOBS` | 5 | queued/processing documents per session (then 429), and the most documents one synchronous process request may handle, because it holds the processing lock; health reports `max_files_per_upload = min(20, PUBLIC_MAX_ACTIVE_JOBS)` |
+
+`MAX_UPLOAD_MB`, `MAX_REQUEST_MB` and `MAX_PAGES` still apply.
+
+**Client IP.** `TRUSTED_PROXY_COUNT` (default 0 = the TCP peer). With `n > 0` the client IP is the n-th `X-Forwarded-For` entry from the right; entries further left are client-supplied and ignored, so forging the header doesn't help. Setting it higher than the real number of proxies lets clients spoof IPs.
+
+**Why in-process, and its limits.** DocMind runs as exactly one process on one instance, so a dictionary of deques is enough and needs no extra service on a free tier. The costs: counters reset on restart, it is not suitable as the only limiter for multiple instances (each would count separately; you would need Redis or the platform's limiter), and users behind one NAT share the per-IP limits.
+
+### The security model in one place
+
+- **Identity:** anonymous, server-issued session cookies for visitors; one admin token for operators. No accounts.
+- **Authorisation:** owner-scoped queries in the service; 404 for anything not yours.
+- **CSRF:** the `SameSite=Strict` cookie plus an Origin check on every POST/PUT/PATCH/DELETE (public and admin): a browser `Origin` must match the `Host` or be in `CORS_ALLOW_ORIGINS`, else 403 "Cross-site request blocked"; `Sec-Fetch-Site: cross-site` without an `Origin` is also rejected. Non-browser clients (no `Origin`) are unaffected. CORS stays off by default, and a UI hosted on another origin is not supported for visitor sessions.
+- **Abuse:** the rate limits and quotas above.
+- **Secrets:** the LLM key stays server-side; visitors cannot reach settings; the SSRF guard and the binding of the environment key to the environment endpoint are unchanged.
+- **Known gaps:** no accounts, so whoever steals a session cookie can read and delete that session's documents until it expires; in-process limiter (single instance, resets on restart); shared NATs share limits; the DNS-rebinding gap in the SSRF guard is unchanged; `TRUSTED_PROXY_COUNT` on Render is unverified.
+
+### Render Free limitations and ephemeral storage
+
+Render's free tier has an **ephemeral disk** and spins the service down when idle. Every restart, redeploy or spin-down therefore loses all documents, the index and `sessions.json`; old cookies then simply mean "no session". The upload panel tells visitors: "Private to this browser · deleted after 24 h of inactivity or when the server restarts". The rate-limit counters also reset on every restart. Cold starts take a while because the embedding model has to load. Treat the free deployment as a demo, not as storage.
+
+### Configuring production limits
+
+Environment variables to set on Render (or any host):
+
+- Keep `DOCMIND_API_TOKEN` (now admin-only, at least 24 characters) and the `LLM_*` values.
+- Add `TRUSTED_PROXY_COUNT=1`. This is the expected value behind Render's proxy but has **not been verified** there: after deploying, call `GET /api/admin/diagnostics` with the admin token and check that `client_ip` is your own public IP. If it shows a proxy address, the value is too low; never set it higher than the real number of proxies.
+- Optionally tune the `PUBLIC_*` limits. On a 512 MB free instance, lower `MAX_UPLOAD_MB` and `MAX_PAGES` (for example 10 MB / 100 pages) so processing stays short, and set `PUBLIC_QA_GLOBAL_LIMIT` to fit your LLM provider's free quota. `SESSION_TTL_HOURS` and `PUBLIC_MAX_SESSIONS` bound disk use.
+- Leave `CORS_ALLOW_ORIGINS` empty and `API_DOCS` unset (docs off in production).
+
+### How it was verified
+
+Backend: 252 tests pass, including 32 in `tests/test_public.py` (isolation, sessions, limits, CSRF, admin auth). Frontend: 48 tests pass, including `web/src/lib/api.test.ts`, which checks that public requests carry no token. A live end-to-end run in production mode with `openrouter/free` and two separate cookie jars confirmed isolation for get/chunks/delete/process/search/ask, grounded answers and abstention, 429 with `Retry-After`, a cross-site delete rejected with 403, a forged cookie seeing nothing, admin endpoints returning 401 without the token, and no secrets in 34 responses or the server log. **Not verified:** behaviour on the real Render deployment, in particular `TRUSTED_PROXY_COUNT`.

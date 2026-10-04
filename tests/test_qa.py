@@ -207,9 +207,9 @@ def test_ask_response_exposes_grounding_and_unverified_text(tmp_path, fake_embed
 
     svc = DocMindService(Settings(data_dir=tmp_path / "d", chunk_size=300, chunk_overlap=50), embedder=fake_embedder,
                          llm=ScriptedLLM("No citations here."))
-    svc.upload("s.pdf", sample_pdf)
-    svc.process()
     with TestClient(create_app(svc)) as c:
+        c.post("/api/documents/upload", files=[("files", ("s.pdf", sample_pdf, "application/pdf"))])
+        c.post("/api/documents/process", json={})
         body = c.post("/api/ask", json={"question": "What is the refund policy?"}).json()
     assert body["grounding"] == "ungrounded" and body["answered_from_documents"] is False
     assert body["unverified_answer"] == "No citations here."

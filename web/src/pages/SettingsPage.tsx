@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { BrainCircuit, Cpu, FlaskConical, Gauge, Loader2, Monitor, Moon, RefreshCw, RotateCcw, Shapes, Sun, Upload } from "lucide-react";
+import { BrainCircuit, Cpu, FlaskConical, Gauge, KeyRound, Loader2, LogOut, Monitor, Moon, RefreshCw, RotateCcw, Shapes, Sun, Upload } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -14,13 +14,11 @@ import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/feedback";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/overlays";
 import { Badge, Input, Segmented, Skeleton } from "@/components/ui/primitives";
-import { api } from "@/lib/api";
-import { describeError } from "@/lib/errors";
+import { api, hasAdminToken, setAdminToken } from "@/lib/api";
+import { ApiError, describeError } from "@/lib/errors";
 import { pluralize } from "@/lib/format";
-import { isTokenRemembered } from "@/lib/preferences";
 import { keys, useDocuments, useHealth, useServerSettings } from "@/lib/queries";
 import type { EditableSettings } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 const SECTIONS = [
   { id: "model", label: "Model", icon: BrainCircuit },
@@ -128,7 +126,11 @@ export function SettingsPage() {
       <PageHeader
         eyebrow="Workspace"
         title="Settings"
-        description="Tune how DocMind retrieves, generates and indexes. Changes are saved on the server, validated, and applied immediately, with no restart."
+        description={
+          settings.data
+            ? "Tune how DocMind retrieves, generates and indexes. Changes are saved on the server, validated, and applied immediately, with no restart."
+            : "Preferences for this browser."
+        }
         actions={
           health.data && (
             <Badge tone={health.data.llm_configured ? "success" : "warning"}>
@@ -139,7 +141,15 @@ export function SettingsPage() {
       />
 
       {settings.error ? (
-        <ErrorState error={settings.error} onRetry={() => settings.refetch()} />
+        settings.error instanceof ApiError && settings.error.status === 401 ? (
+          // Visitors: browser preferences only. Server settings belong to the administrator.
+          <div className="mx-auto max-w-3xl space-y-6">
+            <BrowserPreferences />
+            <AdminSignIn onSignedIn={() => settings.refetch()} />
+          </div>
+        ) : (
+          <ErrorState error={settings.error} onRetry={() => settings.refetch()} />
+        )
       ) : !draft || !settings.data ? (
         <div className="space-y-4">
           <Skeleton className="h-64 w-full rounded-2xl" />
@@ -310,7 +320,23 @@ export function SettingsPage() {
                   ? `${pluralize(settings.data.overridden.length, "setting")} saved here override the server's .env.`
                   : "All server settings come from the server's .env."}
               </p>
-              <ResetDialog disabled={!settings.data.overridden.length && settings.data.llm_api_key.source !== "settings"} onConfirm={() => reset.mutate()} />
+              <div className="flex items-center gap-2">
+                {hasAdminToken() && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setAdminToken(null);
+                      setDraft(null);
+                      client.removeQueries({ queryKey: keys.settings });
+                      settings.refetch();
+                    }}
+                  >
+                    <LogOut /> Sign out
+                  </Button>
+                )}
+                <ResetDialog disabled={!settings.data.overridden.length && settings.data.llm_api_key.source !== "settings"} onConfirm={() => reset.mutate()} />
+              </div>
             </div>
           </div>
         </div>
@@ -376,21 +402,9 @@ function ResetDialog({ disabled, onConfirm }: { disabled: boolean; onConfirm: ()
   );
 }
 
-/** Settings stored in this browser only: access token, theme, motion. */
+/** Settings stored in this browser only: theme and motion. */
 function BrowserPreferences() {
-  const { theme, setTheme, motion, setMotion, reducedMotion, hasToken, setToken } = usePreferences();
-  const client = useQueryClient();
-  const health = useHealth();
-  const [tokenValue, setTokenValue] = useState("");
-  const [remember, setRemember] = useState(isTokenRemembered);
-
-  const saveToken = (event: FormEvent) => {
-    event.preventDefault();
-    setToken(tokenValue.trim() || null, remember);
-    setTokenValue("");
-    client.invalidateQueries();
-    toast.success(tokenValue.trim() ? "Access token saved" : "Access token removed");
-  };
+  const { theme, setTheme, motion, setMotion, reducedMotion } = usePreferences();
 
   return (
     <Section id="preferences" icon={Monitor} title="This browser" description="Stored only in this browser.">
@@ -418,30 +432,65 @@ function BrowserPreferences() {
           ]}
         />
       </Field>
-      <Field
-        label="Access token"
-        hint={health.data?.auth_required ? "This server requires a token; it is sent as X-API-Key." : "This server does not require a token."}
-      >
-        <form onSubmit={saveToken} className="space-y-2.5">
+    </Section>
+  );
+}
+
+/**
+ * Administrator sign-in for server settings. Visitors never need it. The token
+ * is kept in memory for this page only (never in browser storage) and is sent
+ * only to /api/admin/*.
+ */
+function AdminSignIn({ onSignedIn }: { onSignedIn: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!value.trim()) return;
+    setBusy(true);
+    setError(null);
+    setAdminToken(value);
+    try {
+      await api.settings();
+      setValue("");
+      onSignedIn();
+    } catch (e) {
+      setAdminToken(null);
+      setError(e instanceof ApiError && e.status === 401 ? "That token was not accepted." : describeError(e).title);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-line p-5 text-sm">
+      <p className="text-fg-muted">Server settings (model, retrieval, limits) are managed by the administrator.</p>
+      {!open ? (
+        <button type="button" onClick={() => setOpen(true)} className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-fg-muted hover:text-fg">
+          <KeyRound className="size-3.5" /> Administrator sign-in
+        </button>
+      ) : (
+        <form onSubmit={submit} className="mt-4 space-y-2">
           <div className="flex flex-col gap-2 sm:flex-row">
             <Input
               type="password"
               autoComplete="off"
-              aria-label="Access token"
-              placeholder={hasToken ? "Token stored. Enter a new one, or leave empty to remove" : "Access token"}
-              value={tokenValue}
-              onChange={(e) => setTokenValue(e.target.value)}
+              aria-label="Administrator token"
+              placeholder="Administrator token"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
             />
-            <Button type="submit" variant="glass">
-              {tokenValue.trim() ? "Save" : hasToken ? "Remove" : "Save"}
+            <Button type="submit" variant="glass" disabled={busy || !value.trim()}>
+              {busy && <Loader2 className="animate-spin" />} Sign in
             </Button>
           </div>
-          <label className={cn("flex items-center gap-2 text-xs text-fg-muted")}>
-            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="accent-[var(--accent)]" />
-            Remember on this device
-          </label>
+          {error && <p role="alert" className="text-xs text-danger">{error}</p>}
+          <p className="text-xs text-fg-faint">Kept in memory for this page only; reloading signs you out.</p>
         </form>
-      </Field>
-    </Section>
+      )}
+    </div>
   );
 }

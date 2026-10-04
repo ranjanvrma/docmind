@@ -84,6 +84,10 @@ class DocumentRecord:
     error: str | None = None
     classification: dict | None = None
     processed_at: str | None = None
+    # Owner key of the anonymous session that uploaded the document (a hash, not
+    # the cookie value). None = added by the operator (CLI) or before sessions
+    # existed; such documents are never visible to public sessions.
+    owner: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -103,6 +107,7 @@ class LimitsOut(BaseModel):
     max_request_mb: int
     max_pages: int
     max_files_per_upload: int
+    max_documents: int  # per visitor session; 0 = unlimited
     default_top_k: int
     max_top_k: int
 
@@ -114,9 +119,7 @@ class HealthResponse(BaseModel):
     llm_provider: str
     llm_model: str
     llm_configured: bool
-    auth_required: bool
-    documents: int
-    indexed_chunks: int
+    session_ttl_hours: int  # idle visitor sessions and their documents are deleted after this
     limits: LimitsOut
 
 

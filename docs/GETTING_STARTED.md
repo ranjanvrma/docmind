@@ -52,24 +52,24 @@ python main.py api                # serves the UI and the API on http://127.0.0.
 
 ## 4. Try it
 
-1. Open the UI and drop a PDF onto the upload panel. Try the samples in `evaluation/sample_docs/`.
+1. Open the UI and drop a PDF onto the upload panel. Try the samples in `evaluation/sample_docs/`. No sign-in is needed: your first upload creates an anonymous session (an HttpOnly cookie), and your documents are visible only in this browser.
 2. Watch the pipeline (upload → extract → chunk → embed → index) and open the document when it's ready.
 3. **Search**: ask in your own words, e.g. "Can I claim money for a desk?".
-4. **Settings**: add an LLM API key, click *Test connection*, then use **Ask**. Hover over the `[1]` citations to see the source passages.
+4. **Settings**: in development without `DOCMIND_API_TOKEN` the server settings are open; with a token set, use *Administrator sign-in* first. Add an LLM API key, click *Test connection*, then use **Ask**. Hover over the `[1]` citations to see the source passages.
 5. **Settings → Evaluation lab**: run the retrieval evaluation, change the chunk size, save, re-index and run it again.
 
 ## 5. Tests
 
 ```bash
-pytest                            # backend: 220 tests
-cd web && npm test                # frontend: 40 tests
+pytest                            # backend: 252 tests
+cd web && npm test                # frontend: 48 tests
 cd web && npm run typecheck       # TypeScript
 ```
 
 ## Command-line tools
 
 ```bash
-python main.py ingest a.pdf b.pdf                         # index PDFs without the UI
+python main.py ingest a.pdf b.pdf                         # index PDFs without the UI (owner-less: not shown to UI visitors)
 python main.py train-classifier data/classifier/sample_training.csv   # needs requirements-train.txt
 python evaluation/evaluate.py                              # retrieval evaluation
 python evaluation/evaluate.py --qa                         # + answer evaluation (needs an LLM)

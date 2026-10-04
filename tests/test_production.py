@@ -173,19 +173,22 @@ def client_for(fake_embedder, fake_llm, tmp_path):
     return build
 
 
-def test_api_token_required_except_for_health(client_for):
+def test_admin_endpoints_require_the_token_public_ones_do_not(client_for):
     with client_for(api_token="s3cret") as client:
         assert client.get("/api/health").status_code == 200
-        assert client.get("/api/documents").status_code == 401
-        assert client.get("/api/documents", headers={"X-API-Key": "wrong"}).status_code == 401
-        assert client.get("/api/documents", headers={"X-API-Key": "s3cret"}).status_code == 200
-        assert client.get("/api/documents", headers={"Authorization": "Bearer s3cret"}).status_code == 200
-        assert client.post("/api/search", json={"query": "x"}).status_code == 401
-
-
-def test_no_token_configured_means_open_api(client_for):
-    with client_for() as client:
+        # Public visitor endpoints: no token involved.
         assert client.get("/api/documents").status_code == 200
+        assert client.post("/api/search", json={"query": "x"}).status_code == 200
+        # Admin endpoints: token required, via X-API-Key or Bearer.
+        assert client.get("/api/admin/settings").status_code == 401
+        assert client.get("/api/admin/settings", headers={"X-API-Key": "wrong"}).status_code == 401
+        assert client.get("/api/admin/settings", headers={"X-API-Key": "s3cret"}).status_code == 200
+        assert client.get("/api/admin/settings", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_no_token_configured_means_open_admin_in_development(client_for):
+    with client_for() as client:
+        assert client.get("/api/admin/settings").status_code == 200
 
 
 def test_cors_headers_only_for_configured_origins(client_for):
@@ -309,7 +312,7 @@ def test_env_loading_of_deployment_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("DOCMIND_API_TOKEN", "t" * 32)
     monkeypatch.delenv("API_DOCS", raising=False)
-    assert load_settings().api_docs is False  # docs hidden by default in production
+    assert load_settings().docs_enabled is False  # docs hidden by default in production
     monkeypatch.setenv("API_DOCS", "true")
     assert load_settings().api_docs is True
     monkeypatch.setenv("APP_ENV", "production")
@@ -333,9 +336,9 @@ def test_cors_preflight_allows_settings_patch_for_listed_origin_only(tmp_path, f
 
     settings = Settings(data_dir=tmp_path / "data", cors_allow_origins=["https://ui.example.com"])
     with TestClient(create_app(DocMindService(settings, embedder=fake_embedder, llm=fake_llm))) as c:
-        ok = c.options("/api/settings", headers={"Origin": "https://ui.example.com", "Access-Control-Request-Method": "PATCH"})
+        ok = c.options("/api/admin/settings", headers={"Origin": "https://ui.example.com", "Access-Control-Request-Method": "PATCH"})
         assert ok.status_code == 200 and "PATCH" in ok.headers["access-control-allow-methods"]
-        bad = c.options("/api/settings", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "PATCH"})
+        bad = c.options("/api/admin/settings", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "PATCH"})
         assert "access-control-allow-origin" not in bad.headers
 
 
@@ -391,5 +394,5 @@ def test_ssrf_guard_applies_through_the_api(tmp_path, fake_embedder, fake_llm, m
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(None, None, None, "", ("169.254.169.254", 443))])
     settings = Settings(data_dir=tmp_path / "data", app_env="production", api_token="t" * 32)
     with TestClient(create_app(DocMindService(settings, embedder=fake_embedder, llm=fake_llm))) as c:
-        r = c.patch("/api/settings", json={"llm_base_url": "https://evil.example/v1"}, headers={"X-API-Key": "t" * 32})
+        r = c.patch("/api/admin/settings", json={"llm_base_url": "https://evil.example/v1"}, headers={"X-API-Key": "t" * 32})
     assert r.status_code == 422 and "public host" in r.json()["detail"]

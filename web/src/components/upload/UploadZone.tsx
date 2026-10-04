@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2, FileText, FileUp, Loader2, RotateCcw, TriangleAlert, XCircle } from "lucide-react";
+import { ArrowRight, CheckCircle2, FileText, FileUp, Loader2, Lock, RotateCcw, TriangleAlert, XCircle } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Link } from "react-router";
@@ -45,6 +45,7 @@ export function UploadZone({ id }: { id?: string }) {
 
   const maxMb = health?.limits.max_upload_mb ?? 25;
   const maxFiles = health?.limits.max_files_per_upload ?? 20;
+  const ttl = health?.session_ttl_hours ?? 24;
   const busy = state.kind === "busy";
 
   const run = useCallback(
@@ -168,6 +169,10 @@ export function UploadZone({ id }: { id?: string }) {
                 <p className="text-lg font-semibold">{dragging ? "Release to upload" : "Drop your documents here"}</p>
                 <p className="mt-1.5 text-sm text-fg-muted">
                   PDF files supported · up to {maxMb} MB each · {maxFiles} at a time
+                </p>
+                <p className="mt-2 flex items-center gap-1.5 text-xs text-fg-faint">
+                  <Lock className="size-3" aria-hidden />
+                  Private to this browser · deleted after {ttl} h of inactivity or when the server restarts
                 </p>
                 <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
                   <Button variant="primary" onClick={() => inputRef.current?.click()}>

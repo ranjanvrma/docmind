@@ -18,7 +18,7 @@ On upload, DocMind validates the file, hashes it for deduplication, and extracts
 
 Search embeds the query and returns the top-k chunks. For questions, passages below a low relevance floor are dropped, and the rest are numbered as sources in a prompt that tells the LLM to answer only from them, cite them, or say it couldn't find the answer. The code then checks that every cited number really was provided, and classifies the reply as grounded, not found or ungrounded; an ungrounded reply is retried once and otherwise withheld.
 
-There's also a zero-shot document classifier, a FastAPI backend serving a React interface with interactive citations and a settings page with an evaluation lab, 260 tests (220 backend, 40 frontend), and an evaluation script for Hit@K, Precision@K, Recall@K and MRR. It currently runs on a small demo dataset, so I don't treat those numbers as real performance.
+There's also a zero-shot document classifier, a FastAPI backend serving a React interface with interactive citations and an admin-only settings page with an evaluation lab, a public mode where anonymous visitors each see only their own documents, 300 tests (252 backend, 48 frontend), and an evaluation script for Hit@K, Precision@K, Recall@K and MRR. It currently runs on a small demo dataset, so I don't treat those numbers as real performance.
 
 ### 3 minutes (technical)
 1. **Architecture.** Three layers. A React single-page app is only a client of the FastAPI API under `/api`; in production FastAPI also serves the built app, so they share one origin. The routes are thin: they validate with Pydantic and call one method on a `DocMindService` class, which orchestrates the pipeline modules. The CLI, the evaluation script and the tests all use that same service, so there's one implementation of the pipeline.
@@ -109,8 +109,8 @@ Everything in the 3-minute version, plus:
 
 **B5. How do you avoid re-embedding documents?**
 - Testing: caching and idempotence.
-- Key points: content hash; status check + `has_document`; force flag.
-- Model answer: Document IDs are content hashes, so re-uploading the same file is detected as a duplicate. `process()` skips documents whose status is `processed` and whose vectors are in the index unless `force=True`, and a test checks the embedder isn't called. The embedding model itself is loaded once per process via `lru_cache`.
+- Key points: content hash (per owner); status check + `has_document`; force flag.
+- Model answer: Document IDs are hashes of the uploader's owner key plus the content, so re-uploading the same file in the same session is detected as a duplicate (two visitors uploading the same file get separate documents). `process()` skips documents whose status is `processed` and whose vectors are in the index unless `force=True`, and a test checks the embedder isn't called. The embedding model itself is loaded once per process via `lru_cache`.
 
 **B6. How are sources attached to answers?**
 - Testing: attribution mechanics.
@@ -288,7 +288,7 @@ Everything in the 3-minute version, plus:
 **F6. Which important parts are untested?**
 - Testing: self-awareness.
 - Key points: list them honestly.
-- Model answer: Since the audit I added tests for the Anthropic client (real SDK, mocked HTTP), encrypted PDFs, oversized uploads, registry/index consistency, runtime settings and the UI's safe rendering. Later I added tests for grounding and the retry, the relevance floor, background processing and restart recovery, the SSRF guard, and ONNX/sentence-transformers equivalence. A live provider (OpenRouter, including `openrouter/free`) has been spot-checked by hand, not under automated tests. Still untested: the Anthropic provider live, the QA evaluation script, the CLI, an automated browser end-to-end suite, and the Docker build.
+- Model answer: Since the audit I added tests for the Anthropic client (real SDK, mocked HTTP), encrypted PDFs, oversized uploads, registry/index consistency, runtime settings and the UI's safe rendering. Later I added tests for grounding and the retry, the relevance floor, background processing and restart recovery, the SSRF guard, ONNX/sentence-transformers equivalence, and the public mode (`tests/test_public.py`: session isolation between two clients, rate limits and quotas, the Origin check, admin-token handling). A live provider (OpenRouter, including `openrouter/free`) has been spot-checked by hand, not under automated tests. The public mode was also checked in one scripted live run with two cookie jars, but not on the real Render deployment. Still untested: the Anthropic provider live, the QA evaluation script, the CLI, an automated browser end-to-end suite, and the Docker build.
 
 **F7. How do you handle errors in document processing?**
 - Testing: fault isolation.
@@ -304,28 +304,28 @@ Everything in the 3-minute version, plus:
 
 **G1. List your endpoints.**
 - Testing: API knowledge.
-- Key points: 16 routes under `/api`.
-- Model answer: All under `/api`: `GET /health`; `POST /documents/upload`, `POST /documents/process` (optionally in the background), `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/chunks`, `DELETE /documents/{id}`; `POST /search`, `POST /ask`; `GET` and `PATCH /settings`, `DELETE /settings/llm-api-key`, `POST /settings/reset`, `POST /settings/test-llm`; `POST /evaluation/retrieval`.
+- Key points: 16 routes under `/api`: 9 public, 7 admin.
+- Model answer: All under `/api`. Public, no token, scoped to the visitor's session: `GET /health`; `POST /documents/upload`, `POST /documents/process` (optionally in the background), `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/chunks`, `DELETE /documents/{id}`; `POST /search`, `POST /ask`. Admin, behind `DOCMIND_API_TOKEN`: `GET` and `PATCH /admin/settings`, `DELETE /admin/settings/llm-api-key`, `POST /admin/settings/reset`, `POST /admin/settings/test-llm`, `POST /admin/evaluation/retrieval`, `GET /admin/diagnostics`.
 
 **G2. Which status codes does your API return, and when?**
 - Testing: HTTP semantics.
-- Key points: 201/202/204/400/401/404/411/413/422/502/503/500.
-- Model answer: 201 for uploads, 202 for background processing, 204 for delete, 400 when every uploaded file is rejected or there are more than 20, 401 for a missing or wrong token, 404 for unknown documents, 411/413 for a missing or too-large Content-Length on upload, 422 for validation errors, 503 when no LLM is configured (or stored data couldn't be loaded), 502 when the LLM call fails (without the provider's error body), and 500 for internal errors with a generic message.
+- Key points: 201/202/204/400/401/403/404/409/411/413/422/429/502/503/500.
+- Model answer: 201 for uploads, 202 for background processing, 204 for delete, 400 when every uploaded file is rejected or there are more than 20, 401 for a missing or wrong admin token, 403 for a cross-site browser request, 404 for unknown documents and for other visitors' documents, 409 when a session's document quota is full, 429 with `Retry-After` for rate limits, 411/413 for a missing or too-large Content-Length on upload, 422 for validation errors, 503 when no LLM is configured, stored data couldn't be loaded, or the server is at its session capacity, 502 when the LLM call fails (without the provider's error body), and 500 for internal errors with a generic message.
 
 **G3. How does the web UI talk to the backend?**
 - Testing: the client/server split.
-- Key points: same origin under `/api`; typed client; TanStack Query; token handling; error mapping; safe rendering.
-- Model answer: Only through a typed client (`web/src/lib/api.ts`) calling `/api` on the same origin; Vite proxies it in development and FastAPI serves the built UI in production. TanStack Query caches server state. A 401 opens a token dialog, and the token is kept in browser storage, never in the build. Errors map to friendly messages, and 5xx details are never shown because they can contain server paths. Upload uses XHR for real progress; processing then runs in the background and the UI polls the document list every 1.5 s only while something is queued or processing. Answers are rendered from a tiny Markdown subset as React text, so injected links or images can't load.
+- Key points: same origin under `/api`; typed client; TanStack Query; cookie session, no visitor token; admin token in memory; error mapping; safe rendering.
+- Model answer: Only through a typed client (`web/src/lib/api.ts`) calling `/api` on the same origin; Vite proxies it in development and FastAPI serves the built UI in production. TanStack Query caches server state. Visitors send no token: requests use `credentials: "same-origin"`, and the server's HttpOnly session cookie goes along automatically, so JavaScript never sees it. The administrator signs in on the Settings page; that token is kept in memory for the page only, sent only to `/api/admin/*`, and never stored in the build or browser storage. A 429 shows how long to wait, from `Retry-After`. Errors map to friendly messages, and 5xx details are never shown because they can contain server paths. Upload uses XHR for real progress; processing then runs in the background and the UI polls the document list every 1.5 s only while something is queued or processing. Answers are rendered from a tiny Markdown subset as React text, so injected links or images can't load.
 
 **G4. How are uploaded files validated?**
 - Testing: input security.
 - Key points: extension; magic bytes; size; sanitising; hash storage; the spooling caveat.
-- Model answer: The filename is sanitised; the file must end in `.pdf`, contain `%PDF-` in its first kilobyte, and be under `MAX_UPLOAD_MB`. It's stored under its hash. A caveat: Starlette receives the full upload to a temp file before my check, so the limit doesn't stop large uploads reaching the server.
+- Model answer: The filename is sanitised; the file must end in `.pdf`, contain `%PDF-` in its first kilobyte, and be under `MAX_UPLOAD_MB`. It's stored under its document ID (a hash of owner and content). A caveat: Starlette receives the full upload to a temp file before my check, so the limit doesn't stop large uploads reaching the server.
 
 **G5. How do you handle secrets?**
 - Testing: security basics.
 - Key points: env or write-only setting; .gitignore/.dockerignore; not logged; hidden from repr; key bound to its endpoint; SSRF guard.
-- Model answer: API keys come from environment variables or `.env`, which are excluded from git and the Docker build context, or from the Settings page, where the key is write-only and stored in the data directory. They're never logged and are hidden from `Settings.__repr__`. If someone changes the provider or base URL from the UI, the environment key is withheld until a new key is entered, so a token holder can't redirect it to their own host. In production a UI-set base URL must also be `https` and resolve to public IPs only.
+- Model answer: API keys come from environment variables or `.env`, which are excluded from git and the Docker build context, or from the Settings page, where the key is write-only and stored in the data directory. They're never logged and are hidden from `Settings.__repr__`. If someone changes the provider or base URL from the UI, the environment key is withheld until a new key is entered, so an admin-token holder can't redirect it to their own host. Visitors can't reach the settings at all. In production a UI-set base URL must also be `https` and resolve to public IPs only.
 
 **G6. How is the app containerised? Does it work?**
 - Testing: honesty about deployment.
@@ -334,8 +334,8 @@ Everything in the 3-minute version, plus:
 
 **G7. Is this production-ready? What's missing?**
 - Testing: maturity.
-- Key points: auth; rate limits; job queue; scalable storage; evaluation; OCR; monitoring; unverified Docker build.
-- Model answer: No. It has a single shared access token rather than user accounts, and no rate limiting. Background processing is one thread in one process, not a durable job queue; it's a single process with a JSON registry; there's no OCR, no real-world evaluation, no monitoring, and the Docker image has never been built. It's a well-structured prototype that can be demoed on one small instance.
+- Key points: no accounts; in-process rate limits; job queue; scalable storage; evaluation; OCR; monitoring; unverified Docker build.
+- Model answer: No. Visitors are anonymous cookie sessions rather than user accounts, and the rate limiter lives in process memory, so it resets on restart and only works for a single instance. Background processing is one thread in one process, not a durable job queue; it's a single process with a JSON registry; there's no OCR, no real-world evaluation, no monitoring, and the Docker image has never been built. It's a well-structured prototype that can be demoed on one small instance.
 
 ## H. Later changes
 
@@ -362,4 +362,24 @@ Everything in the 3-minute version, plus:
 **H5. Users can change the LLM base URL from the Settings page. Isn't that an SSRF risk?**
 - Testing: security thinking about user-controlled URLs.
 - Key points: who can do it; https only; resolve and require public IPs; metadata endpoints; check-time only (DNS rebinding); operator env trusted; development exception; key withholding.
-- Model answer: It was, so in production `runtime_settings.check_public_endpoint` validates any base URL saved through the API: it must be `https`, and its host must resolve only to public (`is_global`) addresses. That blocks loopback, private ranges and link-local addresses such as the `169.254.169.254` cloud metadata endpoint, which someone with the access token could otherwise make the server call. The check happens when the setting is saved, so DNS rebinding afterwards isn't covered. The operator's own `LLM_BASE_URL` from the environment is trusted, and development mode allows local endpoints like Ollama. Separately, changing the endpoint from the UI withholds the environment's API key until a new key is entered, so the key can't be sent to an attacker's server.
+- Model answer: It was, so in production `runtime_settings.check_public_endpoint` validates any base URL saved through the API: it must be `https`, and its host must resolve only to public (`is_global`) addresses. That blocks loopback, private ranges and link-local addresses such as the `169.254.169.254` cloud metadata endpoint, which someone with the admin token could otherwise make the server call. Visitors can't reach this setting at all. The check happens when the setting is saved, so DNS rebinding afterwards isn't covered. The operator's own `LLM_BASE_URL` from the environment is trusted, and development mode allows local endpoints like Ollama. Separately, changing the endpoint from the UI withholds the environment's API key until a new key is entered, so the key can't be sent to an attacker's server.
+
+**H6. DocMind is public without sign-in. How do you keep one visitor's documents away from another's?**
+- Testing: session design; identity without accounts.
+- Key points: server-generated 256-bit ID; HttpOnly, SameSite=Strict, Path=/api cookie; created lazily on first upload; only a hash stored; owner key on every document; unknown cookie = no session; the admin token is separate.
+- Model answer: On a visitor's first upload the server creates a session: `secrets.token_urlsafe(32)`, sent in an HttpOnly, SameSite=Strict cookie scoped to `/api`, `Secure` in production. Reads and searches never create one. The server stores only a truncated SHA-256 of the ID, the owner key, in `sessions.json`, so a leaked data directory doesn't give anyone a usable cookie. Every document records the owner key of the session that uploaded it. Clients can't pick an identity: an unknown, malformed or expired cookie is just "no session", and a new random ID is issued on the next upload. The old shared `DOCMIND_API_TOKEN` now only protects the admin endpoints; it has nothing to do with visitors. The honest limit: this is possession-based, not authentication. Whoever has the cookie has that session's documents, and clearing cookies loses them.
+
+**H7. How do you make sure a query can't leak another visitor's data?**
+- Testing: authorisation at the data layer; failure modes.
+- Key points: owner passed on every public route; sentinel owner `-` instead of "no filter"; 404 not 403; FAISS results filtered to the visitor's doc IDs; no LLM call without documents; owner-scoped document IDs; tests with two clients.
+- Model answer: Every public route passes the session's owner key into the service, and the service filters by it. A request without a session gets the sentinel owner `-`, which matches nothing, so there's no code path where a missing session turns into an unscoped query. Another visitor's document ID behaves exactly like a missing one (404) for get, chunks, delete, process, and search or ask with `doc_ids`, so IDs can't be probed. Unfiltered search and ask only search the visitor's processed documents; FAISS has one shared index, so the results are filtered to that visitor's document IDs, and a visitor with no documents gets no search and no LLM call. Document IDs include the owner key, so two visitors uploading the same PDF get two separate documents rather than one shared record. Owner-less documents from the CLI are never visible to visitors. `tests/test_public.py` checks this with two separate clients, and a live run with two cookie jars confirmed it. The weak point is the shared index: isolation depends on that filter being applied everywhere, which is why the routes never call the store directly.
+
+**H8. How is abuse limited, and why did you choose an in-process limiter?**
+- Testing: rate-limiting design and its limits.
+- Key points: sliding window; per IP and per session; separate budgets for requests, questions, uploads, new sessions; global question cap for the LLM quota; quotas for documents, jobs, sessions; 429 + Retry-After; in-process trade-off; TRUSTED_PROXY_COUNT.
+- Model answer: `app/ratelimit.py` is a sliding-window counter keyed by IP and by session, so dropping the cookie or sharing it doesn't escape the limits. There are separate budgets: 120 API requests a minute, 20 questions and 20 uploaded files an hour, 20 new sessions per IP an hour (to stop cookie-dropping), plus a server-wide cap of 200 questions an hour that protects the shared OpenRouter quota and is only spent when the visitor actually has documents to search. Quotas cap documents (20, then 409) and queued jobs (5, then 429) per session and active sessions overall (1000, then 503). Rejections are 429 with `Retry-After`, which the UI turns into "try again in N minutes". I kept it in process memory because DocMind runs as exactly one process on one instance; Redis would be another service to run on a free tier. The costs: counters reset on restart, several instances would each count separately, and everyone behind one NAT shares the IP limits. Behind a proxy the client IP comes from `X-Forwarded-For`, counting `TRUSTED_PROXY_COUNT` entries from the right, because entries further left are client-supplied. On Render I expect 1, but I haven't verified it there yet; `/api/admin/diagnostics` shows the IP the limiter sees so it can be checked.
+
+**H9. With cookie-based sessions, what about CSRF, and what are the remaining gaps?**
+- Testing: browser security model; honesty.
+- Key points: SameSite=Strict; Origin check on unsafe methods; Sec-Fetch-Site; non-browser clients unaffected; no cross-origin UI; known gaps.
+- Model answer: Two layers. The cookie is SameSite=Strict, so browsers don't send it on cross-site requests, and every POST, PUT, PATCH or DELETE checks `Origin`: it must match the `Host` or be an explicitly allowed CORS origin, otherwise 403. A request marked `Sec-Fetch-Site: cross-site` without an `Origin` is also rejected. Non-browser clients send no `Origin` and aren't affected, which is fine because they can't ride on a victim's cookie. The remaining gaps: no accounts, so a stolen cookie means access to that session's documents; the limiter is single-instance and resets on restart; shared NATs share limits; the SSRF guard still doesn't cover DNS rebinding; and on Render's free tier the disk is ephemeral, so every restart wipes all documents and sessions. I describe it as a reasonable model for a public demo, not as enterprise security.

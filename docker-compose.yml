@@ -1,7 +1,7 @@
 # DocMind as a single container: the API serves the web UI on the same port.
 #
-#   cp .env.example .env    # then set DOCMIND_API_TOKEN (required: the image runs with
-#                           # APP_ENV=production) and optionally LLM_API_KEY
+#   cp .env.example .env    # then set DOCMIND_API_TOKEN (admin token, required: the image
+#                           # runs with APP_ENV=production) and LLM_API_KEY
 #   docker compose up --build -d
 #   open http://127.0.0.1:8000
 #

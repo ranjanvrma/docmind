@@ -1,9 +1,7 @@
 /**
- * Browser-side preferences: theme, motion and the API access token.
- *
- * The token is never part of the build. The user enters it in Settings; it is
- * kept in sessionStorage by default (cleared when the tab closes) or in
- * localStorage if they choose "remember on this device".
+ * Browser-side preferences: theme and motion. No credentials are stored in the
+ * browser: visitors are identified by an HttpOnly cookie, and the
+ * administrator token lives only in memory (see lib/api.ts).
  */
 
 export type ThemePreference = "dark" | "light" | "system";
@@ -11,7 +9,7 @@ export type MotionPreference = "system" | "reduced" | "full";
 
 const THEME_KEY = "docmind.theme";
 const MOTION_KEY = "docmind.motion";
-const TOKEN_KEY = "docmind.token";
+const LEGACY_TOKEN_KEY = "docmind.token";
 
 function read(storage: Storage | undefined, key: string): string | null {
   try {
@@ -65,16 +63,8 @@ export function applyMotion(pref: MotionPreference) {
   else document.documentElement.dataset.motion = pref;
 }
 
-export function getToken(): string | null {
-  return read(session, TOKEN_KEY) ?? read(local, TOKEN_KEY);
-}
-
-export function isTokenRemembered(): boolean {
-  return read(local, TOKEN_KEY) !== null;
-}
-
-export function setToken(token: string | null, remember = false) {
-  write(session, TOKEN_KEY, null);
-  write(local, TOKEN_KEY, null);
-  if (token) write(remember ? local : session, TOKEN_KEY, token);
+/** Remove access tokens that older versions kept in browser storage. */
+export function clearLegacyToken() {
+  write(local, LEGACY_TOKEN_KEY, null);
+  write(session, LEGACY_TOKEN_KEY, null);
 }

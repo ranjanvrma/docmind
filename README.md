@@ -2,6 +2,8 @@
 
 **Ask questions about your PDFs and get answers you can verify.** DocMind indexes your documents, finds passages by meaning, and answers questions using only those passages, with every claim linked to the exact document and page it came from. When the answer isn't in your documents, it says so.
 
+Anyone can use it straight away: no account and no access token. Each browser gets its own private, temporary library, and rate limits keep the shared LLM quota safe.
+
 It is a retrieval-augmented generation (RAG) system built from first principles, with no orchestration framework hiding the steps: PyMuPDF → sentence-aware chunking → MiniLM embeddings (ONNX Runtime) → FAISS → grounded prompt → LLM → citation validation. One container serves the FastAPI backend and the React interface, and it is designed to run for **$0**: free OpenRouter models, CPU-only inference, about 250 MB of RAM.
 
 ![Ask: a grounded answer with an open citation](docs/screenshots/ask.webp)
@@ -21,8 +23,9 @@ It is a retrieval-augmented generation (RAG) system built from first principles,
 | **Semantic search** | Find passages by meaning, filter by document, see page numbers and cosine similarity (a similarity, not an "accuracy"). |
 | **Grounded Q&A** | Answers are generated only from retrieved passages. Every `[n]` is a chip that opens the exact passage. The server decides grounding: *Grounded · N sources cited*, *Not found in your documents*, or *Could not be verified*. Hallucinated source numbers are flagged, and uncited replies are never presented as answers. |
 | **Document library** | Status, page and chunk counts, warnings (e.g. empty pages), the passages exactly as the retriever sees them, zero-shot category, re-index and delete. |
-| **Settings & evaluation lab** | Change the LLM provider, model, base URL, key (write-only) and limits, and test the connection, without restarting. Tune chunking with a live diagram, re-index in one click, and measure Hit@K / MRR to compare settings. |
-| **Production basics** | Shared access token, upload/page/request limits, security headers and CSP, SSRF guard on UI-set endpoints, crash-safe storage with startup reconciliation, health check, graceful shutdown, structured error handling with no stack traces or provider bodies leaked. |
+| **Private by default** | No sign-up. A server-issued, HttpOnly session cookie gives each browser its own library: other visitors can't list, search, ask about or delete your documents. Idle libraries are deleted automatically. |
+| **Admin settings & evaluation lab** | For the operator (admin token): change the LLM provider, model, base URL, key (write-only) and limits, test the connection, tune chunking with a live diagram, and measure Hit@K / MRR. Applied without restarting. |
+| **Production basics** | Per-IP and per-session rate limits with clean 429s, upload/page/request limits, CSRF protection, security headers and CSP, SSRF guard on admin-set endpoints, crash-safe storage with startup reconciliation, health check, graceful shutdown, no stack traces or provider bodies leaked. |
 
 ## How it works
 
@@ -64,7 +67,9 @@ Deeper dives: [Architecture](docs/ARCHITECTURE.md) · [RAG pipeline](docs/RAG_PI
 
 ```
 app/                  FastAPI app and the RAG pipeline
-  api.py              routes (/api/*), auth, limits, security headers, SPA serving
+  api.py              public routes (/api/*) and admin routes (/api/admin/*), limits, CSRF, SPA serving
+  sessions.py         anonymous visitor sessions (server-issued, hashed at rest)
+  ratelimit.py        in-process sliding-window rate limiter, trusted client-IP extraction
   service.py          orchestration: upload → process (sync or background worker) → search → ask
   ingestion.py        PDF validation and page extraction (PyMuPDF)
   preprocessing.py    text cleaning          chunking.py   sentence-aware chunks
@@ -107,12 +112,14 @@ All configuration is environment variables (`.env` locally, the platform's secre
 |---|---|
 | `LLM_PROVIDER`, `LLM_MODEL`, `LLM_BASE_URL` | `openai`, `openrouter/free`, `https://openrouter.ai/api/v1` for the free setup |
 | `LLM_API_KEY` | **Secret.** OpenRouter key from https://openrouter.ai/keys. Without it, search still works and Q&A is disabled. |
-| `DOCMIND_API_TOKEN` | **Secret.** Shared access token for every `/api` route except `/api/health`. Required (≥ 24 characters) when `APP_ENV=production`. |
+| `DOCMIND_API_TOKEN` | **Secret.** Administrator token for `/api/admin/*` only (server settings, LLM test, evaluation lab, diagnostics). Visitors never need it. Required (≥ 24 characters) when `APP_ENV=production`. |
 | `APP_ENV` | `production` (the Docker image's default) enforces the token and hides `/api/docs` |
+| `TRUSTED_PROXY_COUNT` | Proxies in front of the app that append to `X-Forwarded-For` (Render: `1`), so rate limits see the real client IP |
+| `PUBLIC_*`, `SESSION_TTL_HOURS` | Visitor limits and library lifetime (see [Public use](#public-use-and-security-model)) |
 | `DATA_DIR` | Where uploads, the index, the registry and saved settings live. Must be persistent in production. |
 | `CHUNK_SIZE`, `CHUNK_OVERLAP`, `TOP_K`, `MIN_RELEVANCE` | Retrieval tuning (600 / 150 / 5 / 0.15); also editable on the Settings page |
 
-Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Secrets never reach the browser bundle: the UI asks for the access token at runtime and keeps it in browser storage.
+Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). No secret ever reaches the browser: not in the bundle, not in responses, not in browser storage.
 
 ## Deploy for $0
 
@@ -128,19 +135,44 @@ docker run -p 8000:8000 -v "$PWD/data:/app/data" \
 
 or `docker compose up --build -d` with a `.env` file. On any host that runs a Dockerfile (Render, Hugging Face Spaces, Koyeb, Fly.io, a free VM):
 
-1. Deploy from this repository's `Dockerfile`; set the secrets above in the platform's secret settings.
+1. Deploy from this repository's `Dockerfile`; set the secrets above in the platform's secret settings. Behind Render's proxy also set `TRUSTED_PROXY_COUNT=1`, then confirm with `GET /api/admin/diagnostics` that `client_ip` is your own IP.
 2. Health check path: `/api/health` (public, reveals no secrets). Allow ~90 s for the first start.
 3. Run **one** instance (the index lives in process memory). 512 MB of RAM is enough for typical use.
 4. Mount a **persistent volume at `/app/data`** if the platform offers one.
 
 **Free-tier reality:** many free tiers have an ephemeral disk and sleep when idle. DocMind keeps working there, but every restart starts with an empty library: uploaded PDFs, the FAISS index and the registry all live in `DATA_DIR`. The app is crash-safe and recovers cleanly from an empty or reset directory, but it cannot keep data on storage that the platform deletes. Step-by-step guide and trade-offs: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [docs/DOCKER.md](docs/DOCKER.md).
 
+## Public use and security model
+
+| Surface | Endpoints | Protection |
+|---|---|---|
+| Public (visitors) | `GET /api/health` · `POST /api/documents/upload` · `POST /api/documents/process` · `GET /api/documents[/{id}[/chunks]]` · `DELETE /api/documents/{id}` · `POST /api/search` · `POST /api/ask` | Anonymous session cookie, per-IP and per-session rate limits, CSRF check |
+| Admin (operator) | `/api/admin/settings` (GET/PATCH, reset, LLM key, LLM test) · `/api/admin/evaluation/retrieval` · `/api/admin/diagnostics` | `DOCMIND_API_TOKEN` (`X-API-Key` or `Bearer`); failed attempts throttled |
+
+- **Sessions.** On a visitor's first upload the server issues a random 256-bit session ID in an `HttpOnly`, `SameSite=Strict`, `Secure` cookie. The server stores only its hash; every document records that hash as its owner, and document IDs are owner-specific. Every public query is scoped to the caller's own documents, and anything else answers 404, exactly like a missing document. Visitors can't choose an identity: an unknown cookie simply means "no session".
+- **Rate limits** (in-process, per IP *and* per session; defaults, all configurable):
+
+  | Limit | Default |
+  |---|---|
+  | API requests | 120 per minute |
+  | Questions per visitor | 20 per hour |
+  | Questions for all visitors together | 200 per hour (protects the LLM key) |
+  | Files uploaded | 20 per hour |
+  | Documents kept per visitor | 20 |
+  | Documents processing at once per visitor | 5 |
+  | New sessions per IP | 20 per hour |
+  | Active sessions on the server | 1000 |
+
+  Exceeding a limit returns `429` with `Retry-After`. The limiter lives in process memory: right for a single instance such as Render Free, **not sufficient on its own for multiple instances**.
+- **Data lifecycle.** Libraries idle for `SESSION_TTL_HOURS` (24 h) are deleted with all their files. On hosts with an ephemeral disk (Render Free), a restart or redeploy deletes everything sooner; the UI tells visitors so.
+- **Why `DOCMIND_API_TOKEN` still exists:** it guards the operator's controls (LLM endpoint, model and key, limits, evaluation, diagnostics), which visitors must never reach.
+
 ## Security
 
-- Token auth with constant-time comparison; production refuses to start without a strong token. CORS is off by default and accepts exact origins only.
+- Visitor isolation by server-issued session (above); admin token with constant-time comparison, and production refuses to start without a strong one. CSRF: `SameSite=Strict` cookie plus an `Origin` check on every state-changing request. CORS is off by default and accepts exact origins only.
 - Upload limits checked before the body is read; PDF magic bytes, page limits, encrypted/scanned PDFs handled; files stored under content hashes (no path traversal).
 - Untrusted document text is sanitised before it enters the prompt; answers are rendered as text from a tiny Markdown subset (no links, images or HTML).
-- LLM keys are write-only in the UI, the environment key is never sent to an endpoint changed from the UI, and UI-set base URLs must be public HTTPS hosts in production (SSRF guard).
+- The LLM key stays on the server. Visitors can't reach settings, admin-set keys are write-only, the environment key is never sent to an endpoint changed from the UI, and admin-set base URLs must be public HTTPS hosts in production (SSRF guard).
 - Logs record sizes and timings, never questions, document text, prompts, answers, tokens or keys; clients never see stack traces or provider error bodies.
 
 Details and known gaps: [docs/SECURITY.md](docs/SECURITY.md).
@@ -148,12 +180,12 @@ Details and known gaps: [docs/SECURITY.md](docs/SECURITY.md).
 ## Testing and evaluation
 
 ```bash
-pytest                                     # backend: API, pipeline, storage, security, background worker
-cd web && npm test && npm run typecheck    # frontend: rendering safety, citations, grounding states
+pytest                                     # backend: API, pipeline, storage, security, isolation, rate limits
+cd web && npm test && npm run typecheck    # frontend: rendering safety, citations, grounding, no-token client
 python evaluation/evaluate.py              # retrieval metrics on the demo dataset
 ```
 
-220 backend and 40 frontend tests pass. Retrieval on the bundled demo set (20 questions over 3 short fictional PDFs, written by the author, so optimistic and useful only for **comparing settings**):
+252 backend and 48 frontend tests pass, including cross-visitor isolation for every document endpoint, each rate limit, CSRF and admin separation. Retrieval on the bundled demo set (20 questions over 3 short fictional PDFs, written by the author, so optimistic and useful only for **comparing settings**):
 
 | Chunk size / overlap | Hit@1 | Hit@3 | Hit@5 | MRR |
 |---|---|---|---|---|
@@ -167,7 +199,8 @@ A live end-to-end run against `openrouter/free` (8 questions across 4 routed mod
 
 - **Persistence on free tiers** depends on the platform offering a volume (see above). There is no external storage by design.
 - **Single process.** One worker holds the index; there is no horizontal scaling and no job queue beyond the in-process background worker.
-- **Shared token, not user accounts;** no built-in rate limiting (free models are rate-limited by the provider).
+- **Anonymous sessions, not accounts.** A library lives as long as its browser cookie and the server's disk. Anyone who obtains a session cookie can use that session's documents.
+- **In-process rate limiting** (single instance only); visitors behind one shared IP (NAT) share the per-IP limits.
 - **PDF only, no OCR;** tables and multi-column layouts become plain text.
 - **Dense retrieval only** with a small English-focused model; no BM25 hybrid or re-ranker.
 - **Citation checks are structural.** DocMind verifies that cited sources exist and were provided, not that each passage logically supports the claim, and it cannot tell true document content from planted false content.

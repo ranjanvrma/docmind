@@ -41,7 +41,7 @@ The LLM client is created **lazily**: the app starts without a key, search works
 
 `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_EFFORT`, `LLM_MAX_TOKENS` (default 8192, including reasoning tokens), `LLM_TEMPERATURE` (OpenAI-compatible only), `LLM_TIMEOUT_SECONDS`. All are editable on the Settings page; the key is write-only. See [CONFIGURATION.md](CONFIGURATION.md).
 
-**Test connection** (`POST /api/settings/test-llm`) makes one tiny real request ("Reply with the single word: OK") and reports success and latency, or the error.
+**Test connection** (`POST /api/admin/settings/test-llm`, admin only) makes one tiny real request ("Reply with the single word: OK") and reports success and latency, or the error.
 
 ## Error handling
 

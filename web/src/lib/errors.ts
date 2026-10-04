@@ -15,30 +15,44 @@ export type ErrorKind =
   | "invalid_file"
   | "validation"
   | "rate_limited"
+  | "quota"
+  | "forbidden"
   | "llm_unavailable"
   | "llm_failed"
   | "storage_unavailable"
+  | "server_busy"
   | "server";
 
 export class ApiError extends Error {
   readonly status: number;
   readonly kind: ErrorKind;
   readonly detail: string | null;
+  /** Seconds until a rate-limited request may be retried (from Retry-After). */
+  readonly retryAfter: number | null;
 
-  constructor(status: number, detail: string | null, path = "") {
+  constructor(status: number, detail: string | null, path = "", retryAfter: number | null = null) {
     const kind = classify(status, detail, path);
-    super(friendlyMessage(kind));
+    super(kind === "rate_limited" && retryAfter ? `Too many requests. Please try again in ${waitText(retryAfter)}.` : friendlyMessage(kind));
     this.name = "ApiError";
     this.status = status;
     this.kind = kind;
     this.detail = status >= 400 && status < 500 ? detail : null;
+    this.retryAfter = retryAfter;
   }
+}
+
+function waitText(seconds: number): string {
+  if (seconds < 90) return `${Math.max(1, Math.round(seconds))} seconds`;
+  const minutes = Math.round(seconds / 60);
+  return minutes < 90 ? `${minutes} minutes` : `${Math.round(minutes / 60)} hours`;
 }
 
 export function classify(status: number, detail: string | null, path = ""): ErrorKind {
   if (status === 0) return "network";
   if (status === 401) return "auth";
+  if (status === 403) return "forbidden";
   if (status === 404) return "not_found";
+  if (status === 409) return "quota";
   if (status === 411 || status === 413) return "too_large";
   if (status === 429) return "rate_limited";
   if (status === 422) return "validation";
@@ -49,6 +63,7 @@ export function classify(status: number, detail: string | null, path = ""): Erro
   if (status === 502 && path.startsWith("/ask")) return "llm_failed";
   if (status === 502 || status === 504) return "network";
   if (status === 503) {
+    if (/capacity/i.test(detail ?? "")) return "server_busy";
     return /index unavailable|registry|stored data/i.test(detail ?? "") ? "storage_unavailable" : "llm_unavailable";
   }
   return "server";
@@ -59,7 +74,11 @@ export function friendlyMessage(kind: ErrorKind): string {
     case "network":
       return "Unable to connect to DocMind.";
     case "auth":
-      return "An access token is required.";
+      return "Administrator access is required.";
+    case "forbidden":
+      return "This request was blocked.";
+    case "quota":
+      return "You've reached a limit.";
     case "not_found":
       return "That item could not be found.";
     case "too_large":
@@ -74,6 +93,8 @@ export function friendlyMessage(kind: ErrorKind): string {
       return "AI question answering is currently unavailable.";
     case "llm_failed":
       return "The AI provider returned an error. Please try again in a moment.";
+    case "server_busy":
+      return "DocMind is at capacity right now. Please try again later.";
     case "storage_unavailable":
       return "DocMind's document index is unavailable. The server log explains how to recover.";
     default:

@@ -23,9 +23,11 @@ from app import runtime_settings
 from app.llm import LLMClient, LLMError, create_llm_client
 from app.models import Chunk, DocumentRecord, SearchResult
 from app.preprocessing import preprocess_pages
+from app.prompts import NOT_FOUND_ANSWER
 from app.qa import QAResult, answer_question
 from app.registry import DocumentRegistry
 from app.retrieval import Retriever
+from app.sessions import SESSIONS_FILE, SessionStore
 from app.utils import StorageError, atomic_write_bytes, sanitize_filename
 from app.vector_store import FaissVectorStore, VectorStoreError
 
@@ -33,7 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentNotFoundError(Exception):
-    pass
+    """Unknown document, or one that belongs to another owner (deliberately indistinguishable)."""
+
+
+class QuotaExceededError(Exception):
+    """A per-session limit (documents stored, documents processing) was reached."""
+
+    def __init__(self, message: str, status_code: int = 429):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+ACTIVE_STATUSES = ("queued", "processing")
 
 
 def _now() -> str:
@@ -73,6 +86,12 @@ class DocMindService:
         self._queue_lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self._stopping = threading.Event()
+        # Anonymous visitor sessions (owner keys) and their expiry.
+        self.sessions = SessionStore(
+            settings.data_dir / SESSIONS_FILE, settings.session_ttl_hours * 3600, settings.public_max_sessions
+        )
+        self._maintenance: threading.Thread | None = None
+        self._remove_orphaned_files()
         self._resume_interrupted_processing()
 
     # ------------------------------------------------------------------ LLM
@@ -144,42 +163,72 @@ class DocMindService:
         # user-supplied name, so a crafted filename cannot escape raw_dir.
         return self.settings.raw_dir / f"{doc_id}.pdf"
 
-    def upload(self, filename: str, data: bytes) -> tuple[DocumentRecord, bool]:
+    # ------------------------------------------------------------- ownership
+    # ``owner=None`` means an internal, unscoped call (CLI, evaluation, tests).
+    # Every public API route passes the session's owner key, and then a
+    # document of any other owner behaves exactly like a missing one.
+    def _owned(self, doc_id: str, owner: str | None) -> DocumentRecord:
+        record = self.registry.get(doc_id)
+        if record is None or (owner is not None and record.owner != owner):
+            raise DocumentNotFoundError(doc_id)
+        return record
+
+    def _scope_doc_ids(self, doc_ids: list[str] | None, owner: str | None) -> list[str] | None:
+        """Document filter for search/ask. For an owner, never None: only their processed documents."""
+        if owner is None:
+            return doc_ids
+        if doc_ids:
+            return [self._owned(d, owner).doc_id for d in doc_ids]
+        return [r.doc_id for r in self.registry.all() if r.owner == owner and r.status == "processed"]
+
+    def upload(self, filename: str, data: bytes, owner: str | None = None) -> tuple[DocumentRecord, bool]:
         """Validate and store a PDF. Returns (record, is_duplicate).
 
-        Raises IngestionError if the file is rejected.
+        Raises IngestionError if the file is rejected, QuotaExceededError if
+        the owner already stores PUBLIC_MAX_DOCUMENTS documents.
         """
         safe_name = sanitize_filename(filename)
         validate_pdf_upload(safe_name, data, self.settings.max_upload_bytes)
-        doc_id = compute_document_id(data)
+        doc_id = compute_document_id(data, owner)
 
         existing = self.registry.get(doc_id)
-        if existing is not None:
+        if existing is not None and existing.owner == owner:
             logger.info("Duplicate upload of doc_id=%s ignored", doc_id)
             return existing, True
 
+        limit = self.settings.public_max_documents
+        if owner is not None and limit and sum(1 for r in self.registry.all() if r.owner == owner) >= limit:
+            raise QuotaExceededError(
+                f"You can keep at most {limit} documents at a time. Delete one to upload more.", status_code=409
+            )
         atomic_write_bytes(self._raw_path(doc_id), data)
-        record = DocumentRecord(doc_id=doc_id, filename=safe_name, size_bytes=len(data), uploaded_at=_now())
+        record = DocumentRecord(doc_id=doc_id, filename=safe_name, size_bytes=len(data), uploaded_at=_now(), owner=owner)
         self.registry.upsert(record)
         logger.info("Stored upload doc_id=%s size=%d bytes", doc_id, len(data))
         return record, False
 
     # ----------------------------------------------------------- processing
-    def process(self, doc_ids: list[str] | None = None, force: bool = False) -> list[tuple[DocumentRecord, bool]]:
+    def process(
+        self, doc_ids: list[str] | None = None, force: bool = False, owner: str | None = None
+    ) -> list[tuple[DocumentRecord, bool]]:
         """Process documents into the index. Returns (record, skipped) pairs.
 
         Documents already processed are skipped unless ``force`` is set, so
         embeddings are never recomputed unnecessarily.
         """
         if doc_ids is None:
-            targets = [r for r in self.registry.all() if force or r.status != "processed"]
+            targets = [
+                r for r in self.registry.all()
+                if (owner is None or r.owner == owner) and (force or r.status != "processed")
+            ]
         else:
-            targets = []
-            for doc_id in doc_ids:
-                record = self.registry.get(doc_id)
-                if record is None:
-                    raise DocumentNotFoundError(doc_id)
-                targets.append(record)
+            targets = [self._owned(doc_id, owner) for doc_id in doc_ids]
+        limit = self.settings.public_max_active_jobs
+        if owner is not None and limit:
+            # A visitor's synchronous request holds the processing lock, so it gets the same cap as the queue.
+            pending = [r for r in targets if not (r.status == "processed" and not force and self.store.has_document(r.doc_id))]
+            if len(pending) > limit:
+                raise QuotaExceededError(f"Process at most {limit} documents at once.")
 
         results: list[tuple[DocumentRecord, bool]] = []
         with self._write_lock:
@@ -204,7 +253,9 @@ class DocMindService:
         return results
 
     # ------------------------------------------------- background processing
-    def enqueue(self, doc_ids: list[str] | None = None, force: bool = False) -> list[tuple[DocumentRecord, bool]]:
+    def enqueue(
+        self, doc_ids: list[str] | None = None, force: bool = False, owner: str | None = None
+    ) -> list[tuple[DocumentRecord, bool]]:
         """Queue documents for processing on the background worker.
 
         Returns (record, skipped) pairs immediately. Queued documents have
@@ -213,14 +264,24 @@ class DocMindService:
         """
         with self._queue_lock:
             if doc_ids is None:
-                targets = [r for r in self.registry.all() if force or r.status in ("uploaded", "failed")]
+                targets = [
+                    r for r in self.registry.all()
+                    if (owner is None or r.owner == owner) and (force or r.status in ("uploaded", "failed"))
+                ]
             else:
-                targets = []
-                for doc_id in doc_ids:
-                    record = self.registry.get(doc_id)
-                    if record is None:
-                        raise DocumentNotFoundError(doc_id)
-                    targets.append(record)
+                targets = [self._owned(doc_id, owner) for doc_id in doc_ids]
+            limit = self.settings.public_max_active_jobs
+            if owner is not None and limit:
+                active = sum(1 for r in self.registry.all() if r.owner == owner and r.status in ACTIVE_STATUSES)
+                new = sum(
+                    1 for r in targets
+                    if r.status not in ACTIVE_STATUSES
+                    and not (r.status == "processed" and not force and self.store.has_document(r.doc_id))
+                )
+                if active + new > limit:
+                    raise QuotaExceededError(
+                        f"At most {limit} documents can be processing at once. Wait for them to finish and try again."
+                    )
             results: list[tuple[DocumentRecord, bool]] = []
             for record in targets:
                 if record.status in ("queued", "processing"):
@@ -296,6 +357,10 @@ class DocMindService:
         Documents still queued keep their status and are resumed on next start.
         """
         self._stopping.set()
+        try:
+            self.sessions.flush()
+        except OSError:
+            logger.warning("Could not save session activity on shutdown")
         if self._worker is not None:
             self._worker.join(timeout)
             if self._worker.is_alive():
@@ -407,24 +472,21 @@ class DocMindService:
         return record
 
     # ------------------------------------------------------------ documents
-    def list_documents(self) -> list[DocumentRecord]:
-        return self.registry.all()
+    def list_documents(self, owner: str | None = None) -> list[DocumentRecord]:
+        records = self.registry.all()
+        return records if owner is None else [r for r in records if r.owner == owner]
 
-    def get_document(self, doc_id: str) -> DocumentRecord:
-        record = self.registry.get(doc_id)
-        if record is None:
-            raise DocumentNotFoundError(doc_id)
-        return record
+    def get_document(self, doc_id: str, owner: str | None = None) -> DocumentRecord:
+        return self._owned(doc_id, owner)
 
-    def get_document_chunks(self, doc_id: str) -> list[Chunk]:
-        self.get_document(doc_id)  # raises DocumentNotFoundError
+    def get_document_chunks(self, doc_id: str, owner: str | None = None) -> list[Chunk]:
+        self._owned(doc_id, owner)  # raises DocumentNotFoundError
         return self.store.chunks_for_document(doc_id)
 
-    def delete_document(self, doc_id: str) -> None:
+    def delete_document(self, doc_id: str, owner: str | None = None) -> None:
         # Lock order everywhere: _write_lock, then _queue_lock.
         with self._write_lock, self._queue_lock:
-            if self.registry.get(doc_id) is None:
-                raise DocumentNotFoundError(doc_id)
+            self._owned(doc_id, owner)
             if self.store.remove_document(doc_id):
                 self.store.save()
             self.registry.delete(doc_id)
@@ -435,16 +497,74 @@ class DocMindService:
     def _resolve_top_k(self, top_k: int | None) -> int:
         return max(1, min(top_k or self.settings.top_k, self.settings.max_top_k))
 
-    def search(self, query: str, top_k: int | None = None, doc_ids: list[str] | None = None) -> list[SearchResult]:
-        return self.retriever.search(query, self._resolve_top_k(top_k), doc_ids)
+    def search(
+        self, query: str, top_k: int | None = None, doc_ids: list[str] | None = None, owner: str | None = None
+    ) -> list[SearchResult]:
+        scope = self._scope_doc_ids(doc_ids, owner)
+        if scope is not None and not scope:
+            if not query.strip():
+                raise ValueError("Query must not be empty")
+            return []  # the owner has nothing indexed: never fall back to searching everything
+        return self.retriever.search(query, self._resolve_top_k(top_k), scope)
 
-    def ask(self, question: str, top_k: int | None = None, doc_ids: list[str] | None = None) -> QAResult:
+    def ask(
+        self, question: str, top_k: int | None = None, doc_ids: list[str] | None = None, owner: str | None = None
+    ) -> QAResult:
+        llm = self.llm  # raises LLMNotConfiguredError first, whatever the documents
+        scope = self._scope_doc_ids(doc_ids, owner)
+        if scope is not None and not scope:
+            return QAResult(question=question, answer=NOT_FOUND_ANSWER, sources=[])
         return answer_question(
             question,
             self.retriever,
-            self.llm,
+            llm,
             self._resolve_top_k(top_k),
             self.settings.max_context_chars,
-            doc_ids,
+            scope,
             min_score=self.settings.min_relevance,
         )
+
+    # ------------------------------------------------------------ lifecycle
+    def owner_has_active_session(self, owner: str) -> bool:
+        return owner in self.sessions.owners()
+
+    def expire_sessions(self) -> int:
+        """Delete expired sessions and every document they own. Returns documents deleted."""
+        expired = set(self.sessions.expire())
+        live = self.sessions.owners()
+        # Also catches documents whose session vanished (e.g. sessions.json lost).
+        doomed = [r.doc_id for r in self.registry.all() if r.owner is not None and (r.owner in expired or r.owner not in live)]
+        for doc_id in doomed:
+            try:
+                self.delete_document(doc_id)
+            except DocumentNotFoundError:
+                pass
+        if expired or doomed:
+            logger.info("Expired %d session(s); deleted %d document(s)", len(expired), len(doomed))
+        return len(doomed)
+
+    def start_maintenance(self, interval_seconds: float = 60.0) -> None:
+        """Expire idle sessions periodically on a daemon thread (started by the API)."""
+        if self._maintenance is not None and self._maintenance.is_alive():
+            return
+
+        def loop() -> None:
+            while not self._stopping.wait(interval_seconds):
+                try:
+                    self.expire_sessions()
+                except Exception:
+                    logger.exception("Session maintenance failed")
+
+        self._maintenance = threading.Thread(target=loop, name="docmind-maintenance", daemon=True)
+        self._maintenance.start()
+
+    def _remove_orphaned_files(self) -> None:
+        """Delete stored PDFs that no registry entry refers to (e.g. after a crash mid-delete)."""
+        known = {r.doc_id for r in self.registry.all()}
+        for path in self.settings.raw_dir.glob("*.pdf"):
+            if path.stem not in known:
+                try:
+                    path.unlink()
+                    logger.info("Removed orphaned upload %s", path.name)
+                except OSError:
+                    logger.warning("Could not remove orphaned upload %s", path.name)

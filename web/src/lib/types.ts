@@ -5,6 +5,8 @@ export interface Limits {
   max_request_mb: number;
   max_pages: number;
   max_files_per_upload: number;
+  /** Documents a visitor can keep at once (0 = unlimited). */
+  max_documents: number;
   default_top_k: number;
   max_top_k: number;
 }
@@ -16,9 +18,8 @@ export interface Health {
   llm_provider: string;
   llm_model: string;
   llm_configured: boolean;
-  auth_required: boolean;
-  documents: number;
-  indexed_chunks: number;
+  /** Idle visitor sessions (and their documents) are deleted after this. */
+  session_ttl_hours: number;
   limits: Limits;
 }
 

@@ -7,10 +7,10 @@ Follow [GETTING_STARTED.md](GETTING_STARTED.md): a Python virtual environment wi
 ## Before you open a pull request
 
 ```bash
-pytest                      # backend: 220 tests
+pytest                      # backend: 252 tests
 cd web
 npm run typecheck
-npm test                    # frontend: 40 tests
+npm test                    # frontend: 48 tests
 npm run build
 ```
 

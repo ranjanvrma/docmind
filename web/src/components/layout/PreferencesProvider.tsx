@@ -1,14 +1,12 @@
 import { MotionConfig } from "motion/react";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import {
   applyMotion,
   applyTheme,
   getMotion,
   getTheme,
-  getToken,
   prefersReducedMotion,
-  setToken as storeToken,
   type MotionPreference,
   type ThemePreference,
 } from "@/lib/preferences";
@@ -20,8 +18,6 @@ interface PreferencesValue {
   setMotion: (motion: MotionPreference) => void;
   /** Effective value: in-app setting, else the OS preference. */
   reducedMotion: boolean;
-  hasToken: boolean;
-  setToken: (token: string | null, remember: boolean) => void;
 }
 
 const PreferencesContext = createContext<PreferencesValue | null>(null);
@@ -30,7 +26,6 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemePreference>(getTheme);
   const [motion, setMotionState] = useState<MotionPreference>(getMotion);
   const [systemReduced, setSystemReduced] = useState(() => prefersReducedMotion("system"));
-  const [hasToken, setHasToken] = useState(() => Boolean(getToken()));
 
   useEffect(() => applyTheme(theme), [theme]);
   useEffect(() => applyMotion(motion), [motion]);
@@ -49,16 +44,11 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     };
   }, [theme]);
 
-  const setToken = useCallback((token: string | null, remember: boolean) => {
-    storeToken(token, remember);
-    setHasToken(Boolean(token));
-  }, []);
-
   const reducedMotion = motion === "reduced" || (motion === "system" && systemReduced);
 
   const value = useMemo(
-    () => ({ theme, setTheme: setThemeState, motion, setMotion: setMotionState, reducedMotion, hasToken, setToken }),
-    [theme, motion, reducedMotion, hasToken, setToken],
+    () => ({ theme, setTheme: setThemeState, motion, setMotion: setMotionState, reducedMotion }),
+    [theme, motion, reducedMotion],
   );
 
   return (

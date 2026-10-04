@@ -1,12 +1,13 @@
 /**
  * Typed client for the DocMind API (same origin, under /api).
  *
- * Every request carries the access token from preferences if one is set.
- * Errors are normalised into ApiError so the UI can show friendly messages.
+ * Visitors need no credentials: the server identifies each browser with an
+ * HttpOnly session cookie that this code never sees (the browser sends it on
+ * same-origin requests automatically). Only the administrator endpoints
+ * (/api/admin/*) take a token, which is kept in memory for the current page
+ * and never written to browser storage.
  */
 import { ApiError } from "./errors";
-import { emit } from "./events";
-import { getToken } from "./preferences";
 import type {
   AskResponse,
   DocumentChunk,
@@ -22,15 +23,25 @@ import type {
 } from "./types";
 
 // Same origin by default: FastAPI serves the built UI, and Vite proxies /api in
-// development. Set VITE_API_BASE_URL at build time only when the UI is hosted
-// on a different origin from the API (that API must then list this origin in
-// CORS_ALLOW_ORIGINS). Never put secrets in VITE_* variables: they are public.
+// development. Session cookies are same-origin only, so the public app must be
+// served from the API's origin. Never put secrets in VITE_* variables: they are public.
 const API_ORIGIN = (import.meta.env.VITE_API_BASE_URL ?? "").trim().replace(/\/+$/, "");
 const BASE = `${API_ORIGIN}/api`;
 
-function authHeaders(): Record<string, string> {
-  const token = getToken();
-  return token ? { "X-API-Key": token } : {};
+let adminToken: string | null = null;
+
+/** Administrator token for /api/admin/* (memory only; cleared on reload). */
+export function setAdminToken(token: string | null) {
+  adminToken = token && token.trim() ? token.trim() : null;
+}
+
+export function hasAdminToken(): boolean {
+  return adminToken !== null;
+}
+
+function retryAfter(value: string | null): number | null {
+  const seconds = value ? Number(value) : NaN;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
 }
 
 async function parseError(response: Response, path: string): Promise<ApiError> {
@@ -45,16 +56,17 @@ async function parseError(response: Response, path: string): Promise<ApiError> {
   } catch {
     /* non-JSON error body: ignore it */
   }
-  if (response.status === 401) emit("auth-required");
-  return new ApiError(response.status, detail, path);
+  return new ApiError(response.status, detail, path, retryAfter(response.headers.get("Retry-After")));
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
+  const admin: Record<string, string> = path.startsWith("/admin/") && adminToken ? { "X-API-Key": adminToken } : {};
   try {
     response = await fetch(`${BASE}${path}`, {
       ...init,
-      headers: { ...(init.body ? { "Content-Type": "application/json" } : {}), ...authHeaders(), ...init.headers },
+      credentials: "same-origin",
+      headers: { ...(init.body ? { "Content-Type": "application/json" } : {}), ...admin, ...init.headers },
     });
   } catch {
     throw new ApiError(0, null, path);
@@ -87,14 +99,15 @@ export const api = {
       body: JSON.stringify({ question, top_k: topK, doc_ids: docIds?.length ? docIds : null }),
     }),
 
-  settings: () => request<SettingsView>("/settings"),
+  // Administrator endpoints (DOCMIND_API_TOKEN).
+  settings: () => request<SettingsView>("/admin/settings"),
   updateSettings: (changes: Partial<EditableSettings> & { llm_api_key?: string }) =>
-    request<SettingsView>("/settings", { method: "PATCH", body: JSON.stringify(changes) }),
-  removeSavedLlmKey: () => request<SettingsView>("/settings/llm-api-key", { method: "DELETE" }),
-  resetSettings: () => request<SettingsView>("/settings/reset", { method: "POST" }),
-  testLlm: () => request<LlmTestResult>("/settings/test-llm", { method: "POST" }),
+    request<SettingsView>("/admin/settings", { method: "PATCH", body: JSON.stringify(changes) }),
+  removeSavedLlmKey: () => request<SettingsView>("/admin/settings/llm-api-key", { method: "DELETE" }),
+  resetSettings: () => request<SettingsView>("/admin/settings/reset", { method: "POST" }),
+  testLlm: () => request<LlmTestResult>("/admin/settings/test-llm", { method: "POST" }),
   evaluateRetrieval: (ks = [1, 3, 5]) =>
-    request<EvaluationReport>("/evaluation/retrieval", { method: "POST", body: JSON.stringify({ ks }) }),
+    request<EvaluationReport>("/admin/evaluation/retrieval", { method: "POST", body: JSON.stringify({ ks }) }),
 
   /**
    * Upload files with real byte-level progress. fetch() cannot report upload
@@ -107,7 +120,6 @@ export const api = {
       files.forEach((file) => form.append("files", file, file.name));
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${BASE}${path}`);
-      Object.entries(authHeaders()).forEach(([k, v]) => xhr.setRequestHeader(k, v));
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) onProgress?.(event.loaded / event.total);
       };
@@ -120,8 +132,8 @@ export const api = {
           /* ignore */
         }
         if (xhr.status >= 200 && xhr.status < 300 && body.items) return resolve(body.items);
-        if (xhr.status === 401) emit("auth-required");
-        reject(new ApiError(xhr.status, typeof body.detail === "string" ? body.detail : null, path));
+        const detail = typeof body.detail === "string" ? body.detail : null;
+        reject(new ApiError(xhr.status, detail, path, retryAfter(xhr.getResponseHeader("Retry-After"))));
       };
       xhr.send(form);
     });
