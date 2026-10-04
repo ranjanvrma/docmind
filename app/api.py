@@ -15,7 +15,7 @@ import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -186,6 +186,8 @@ def create_app(service: DocMindService | None = None, settings: Settings | None 
             "token" if settings.api_token else "none",
         )
         yield
+        if service is None and app.state.service is not None:
+            app.state.service.shutdown()
 
     app = FastAPI(
         title="DocMind API",
@@ -307,11 +309,15 @@ def create_app(service: DocMindService | None = None, settings: Settings | None 
 
     @api.post("/documents/process", response_model=ProcessResponse)
     def process_documents(
-        body: ProcessRequest | None = None, svc: DocMindService = Depends(get_service)
+        response: Response, body: ProcessRequest | None = None, svc: DocMindService = Depends(get_service)
     ) -> ProcessResponse:
         body = body or ProcessRequest()
         try:
-            results = svc.process(body.doc_ids, force=body.force)
+            if body.background:
+                results = svc.enqueue(body.doc_ids, force=body.force)
+                response.status_code = 202
+            else:
+                results = svc.process(body.doc_ids, force=body.force)
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown document id: {exc}") from exc
         items = [
@@ -381,8 +387,10 @@ def create_app(service: DocMindService | None = None, settings: Settings | None 
             question=result.question,
             answer=result.answer,
             answered_from_documents=result.answered_from_documents,
+            grounding=result.grounding,
             sources=sources,
             invalid_citations=result.invalid_citations,
+            unverified_answer=result.unverified_answer,
             model=result.model,
         )
 

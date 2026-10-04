@@ -9,6 +9,7 @@ logic.
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 from datetime import datetime, timezone
@@ -67,6 +68,12 @@ class DocMindService:
         # Serialises index mutations (process/delete). Searches only take the
         # vector store's own read lock.
         self._write_lock = threading.Lock()
+        # Background processing: one worker thread, started on first use.
+        self._queue: queue.Queue[str] = queue.Queue()
+        self._queue_lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        self._stopping = threading.Event()
+        self._resume_interrupted_processing()
 
     # ------------------------------------------------------------------ LLM
     @property
@@ -179,6 +186,10 @@ class DocMindService:
             changed = False
             succeeded: list[DocumentRecord] = []
             for record in targets:
+                current = self.registry.get(record.doc_id)
+                if current is None:
+                    continue  # deleted while waiting for the lock
+                record = current
                 if record.status == "processed" and not force and self.store.has_document(record.doc_id):
                     results.append((record, True))
                     continue
@@ -191,6 +202,104 @@ class DocMindService:
             if changed:
                 self._save_index_then_commit(succeeded)
         return results
+
+    # ------------------------------------------------- background processing
+    def enqueue(self, doc_ids: list[str] | None = None, force: bool = False) -> list[tuple[DocumentRecord, bool]]:
+        """Queue documents for processing on the background worker.
+
+        Returns (record, skipped) pairs immediately. Queued documents have
+        status "queued", then "processing", then "processed" or "failed";
+        clients poll the document list. Selection rules match ``process``.
+        """
+        with self._queue_lock:
+            if doc_ids is None:
+                targets = [r for r in self.registry.all() if force or r.status in ("uploaded", "failed")]
+            else:
+                targets = []
+                for doc_id in doc_ids:
+                    record = self.registry.get(doc_id)
+                    if record is None:
+                        raise DocumentNotFoundError(doc_id)
+                    targets.append(record)
+            results: list[tuple[DocumentRecord, bool]] = []
+            for record in targets:
+                if record.status in ("queued", "processing"):
+                    results.append((record, False))  # already pending
+                elif record.status == "processed" and not force and self.store.has_document(record.doc_id):
+                    results.append((record, True))
+                else:
+                    results.append((self._queue_document(record), False))
+            return results
+
+    def _queue_document(self, record: DocumentRecord) -> DocumentRecord:
+        queued = self._with_status(record, "queued")
+        self._queue.put(queued.doc_id)
+        self._ensure_worker()
+        return queued
+
+    def _with_status(self, record: DocumentRecord, status: str) -> DocumentRecord:
+        updated = DocumentRecord.from_dict(record.to_dict())
+        updated.status = status
+        if status == "queued":
+            updated.error = None
+        self.registry.upsert(updated)
+        return updated
+
+    def _ensure_worker(self) -> None:
+        if self._worker is None or not self._worker.is_alive():
+            self._stopping.clear()
+            self._worker = threading.Thread(target=self._work, name="docmind-processing", daemon=True)
+            self._worker.start()
+
+    def _work(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                doc_id = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                # Atomic with delete_document, so a deleted document is never resurrected.
+                with self._queue_lock:
+                    record = self.registry.get(doc_id)
+                    if record is None or record.status != "queued":
+                        continue  # deleted, or already processed synchronously
+                    self._with_status(record, "processing")
+                self.process([doc_id], force=True)
+            except DocumentNotFoundError:
+                pass  # deleted while queued
+            except Exception:
+                logger.exception("Background processing failed for doc_id=%s", doc_id)
+            finally:
+                self._queue.task_done()
+
+    def _resume_interrupted_processing(self) -> None:
+        """Re-queue documents whose processing was interrupted by a restart."""
+        interrupted = [r for r in self.registry.all() if r.status in ("queued", "processing")]
+        if interrupted:
+            logger.info("Resuming processing of %d document(s) interrupted by a restart", len(interrupted))
+            with self._queue_lock:
+                for record in interrupted:
+                    self._queue_document(record)
+
+    def wait_for_processing(self, timeout: float | None = None) -> bool:
+        """Block until the queue is empty (tests and the CLI). Returns False on timeout."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self._queue.unfinished_tasks:
+            if deadline is not None and time.monotonic() > deadline:
+                return False
+            time.sleep(0.05)
+        return True
+
+    def shutdown(self, timeout: float = 20.0) -> None:
+        """Stop the worker after the document it is processing (if any).
+
+        Documents still queued keep their status and are resumed on next start.
+        """
+        self._stopping.set()
+        if self._worker is not None:
+            self._worker.join(timeout)
+            if self._worker.is_alive():
+                logger.warning("Background processing did not finish within %.0fs; it resumes on next start", timeout)
 
     def _save_index_then_commit(self, succeeded: list[DocumentRecord]) -> None:
         """Persist the index first; only then mark documents as processed.
@@ -312,7 +421,8 @@ class DocMindService:
         return self.store.chunks_for_document(doc_id)
 
     def delete_document(self, doc_id: str) -> None:
-        with self._write_lock:
+        # Lock order everywhere: _write_lock, then _queue_lock.
+        with self._write_lock, self._queue_lock:
             if self.registry.get(doc_id) is None:
                 raise DocumentNotFoundError(doc_id)
             if self.store.remove_document(doc_id):
@@ -336,4 +446,5 @@ class DocMindService:
             self._resolve_top_k(top_k),
             self.settings.max_context_chars,
             doc_ids,
+            min_score=self.settings.min_relevance,
         )

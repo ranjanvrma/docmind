@@ -16,12 +16,12 @@ DocMind is a retrieval-augmented generation (RAG) application for PDFs: upload d
 ## How the AI pipeline works
 
 1. [RAG_PIPELINE.md](RAG_PIPELINE.md): the end-to-end flow and why retrieval is separate from generation
-2. [EMBEDDINGS.md](EMBEDDINGS.md): turning text into vectors
+2. [EMBEDDINGS.md](EMBEDDINGS.md): turning text into vectors, run with ONNX Runtime (no PyTorch)
 3. [VECTOR_SEARCH.md](VECTOR_SEARCH.md): FAISS, IDs, persistence, consistency
-4. [RETRIEVAL.md](RETRIEVAL.md): top-k, filters, similarity scores
-5. [PROMPTING.md](PROMPTING.md): context construction and the grounding prompt
-6. [LLM_INTEGRATION.md](LLM_INTEGRATION.md): providers, configuration, errors
-7. [CITATIONS.md](CITATIONS.md): how sources are numbered, cited and verified
+4. [RETRIEVAL.md](RETRIEVAL.md): top-k, filters, similarity scores, the relevance floor
+5. [PROMPTING.md](PROMPTING.md): context construction, the grounding prompt, prompt-injection hardening
+6. [LLM_INTEGRATION.md](LLM_INTEGRATION.md): providers, configuration, retries, errors
+7. [CITATIONS.md](CITATIONS.md): how sources are numbered, cited and verified; grounding and unverified replies
 8. [EVALUATION.md](EVALUATION.md): how quality is measured, and what the numbers do and do not mean
 
 ## Product and engineering
@@ -42,5 +42,7 @@ These were written while auditing the project for interview preparation. They de
 ## Honesty notes
 
 - Retrieval quality has only been measured on a **small demo dataset** written by the author ([EVALUATION.md](EVALUATION.md)).
-- Question answering was built and tested with a **scripted stand-in LLM**, then spot-checked end to end against a **live provider** (OpenRouter, one model). See [LLM_INTEGRATION.md](LLM_INTEGRATION.md#verification-status).
-- The Docker image has **not yet been built** in a real Docker environment.
+- Question answering was built and tested with a **scripted stand-in LLM**, then spot-checked end to end against a **live provider** (OpenRouter: one pinned model, and `openrouter/free`, which routed 8 questions to 4 different free models). The Anthropic provider has not been run live, and the QA evaluation script has not been run. See [LLM_INTEGRATION.md](LLM_INTEGRATION.md#verification-status).
+- Memory and load-time figures for the ONNX embedding runtime were measured on the Windows development machine only ([EMBEDDINGS.md](EMBEDDINGS.md#memory-and-load-time)).
+- The Docker image has **not yet been built** in a real Docker environment, so its size and container startup time are unmeasured.
+- There is no automated browser end-to-end test suite.

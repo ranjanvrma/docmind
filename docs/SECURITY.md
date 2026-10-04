@@ -28,7 +28,7 @@ Files are stored as `<sha256-prefix>.pdf`; user-supplied names are sanitised and
 
 ## Prompt injection and untrusted document text
 
-Document text reaches the LLM. Mitigations are described in [PROMPTING.md](PROMPTING.md#prompt-injection-hardening): an untrusted-source rule in the system prompt, removal of `<sources>` delimiters and `[Source n]` headers from document text, and a plain-text answer instruction. **Mitigated, not solved**: a malicious document can still try to influence an answer's content.
+Document text reaches the LLM. Mitigations are described in [PROMPTING.md](PROMPTING.md#prompt-injection-hardening): an untrusted-source rule in the system prompt, removal of `<sources>` delimiters and `[Source n]` headers from document text and from filenames in source headers, and a plain-text answer instruction. In a live test with four free models, an injected instruction on a PDF page was not followed and its link was not emitted. **Mitigated, not solved**: a malicious document can still influence an answer's content; one model reported the planted claim, with a citation, as something the source says. DocMind cannot tell true document content from planted false content.
 
 ## Markdown / HTML escaping in the UI
 
@@ -51,15 +51,16 @@ Document text reaches the LLM. Mitigations are described in [PROMPTING.md](PROMP
 - An LLM key saved from the Settings page is stored in `<DATA_DIR>/settings.json` (git- and docker-ignored, inside the persistent data volume). It is **write-only**: no endpoint ever returns it, and responses only say `configured` and `source`.
 - Settings that define security boundaries (`DOCMIND_API_TOKEN`, `CORS_ALLOW_ORIGINS`, `APP_ENV`) cannot be changed through the API.
 - **The environment's LLM key is bound to the environment's endpoint.** Changing the provider or base URL from the Settings page withholds that key until a key for the new endpoint is entered, so a token holder cannot point the server at their own host and capture the key.
+- **LLM base URLs set from the UI cannot reach internal addresses (SSRF guard).** In `APP_ENV=production`, a base URL saved through the API or Settings page must be `https` and its host must resolve only to public (`is_global`) IP addresses (`runtime_settings.check_public_endpoint`). This blocks loopback, private and link-local addresses, including cloud metadata endpoints such as `169.254.169.254`; otherwise anyone with the token could make the server send requests to internal services. DNS is checked when the setting is saved; a DNS rebinding afterwards is not covered. The operator's own `LLM_BASE_URL` environment value is trusted, and development mode allows local endpoints such as Ollama.
 - `.env`, `.env.*` (except `.env.example`), `*.pem`, `*.key` and `*.log` are git- and docker-ignored. The web bundle can only contain `VITE_*` variables, and the only one used (`VITE_API_BASE_URL`) is a public URL.
 
 ## Production profile
 
-`APP_ENV=production` (the Docker image's default) refuses to start without `DOCMIND_API_TOKEN` and turns off `/api/docs` and `/api/openapi.json` unless `API_DOCS=true`. There are no debug endpoints. The `Server` header is not sent.
+`APP_ENV=production` (the Docker image's default) refuses to start without a `DOCMIND_API_TOKEN` of at least 24 characters, applies the SSRF guard above, and turns off `/api/docs` and `/api/openapi.json` unless `API_DOCS=true`. There are no debug endpoints. The `Server` header is not sent.
 
 ## Logging policy
 
-Logs contain document IDs, counts, sizes and timings. They **never** contain query text, document text, prompts, answers, tokens or keys. LLM provider error bodies are logged truncated (300 characters) for debugging and are not returned to clients. Setting changes log field **names**, never values.
+Logs contain document IDs, counts, sizes and timings. They **never** contain query text, document text, prompts, answers, tokens or keys. LLM provider error bodies are logged truncated (300 characters) for debugging and are never returned to clients. Setting changes log field **names**, never values.
 
 ## Not implemented
 

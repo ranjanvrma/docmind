@@ -10,7 +10,7 @@ export function DocumentGrid({ documents }: { documents: DocumentInfo[] }) {
       variants={stagger(0.05)}
       initial="hidden"
       animate="show"
-      className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
       aria-label="Documents"
     >
       <AnimatePresence initial={false}>
@@ -24,7 +24,7 @@ export function DocumentGrid({ documents }: { documents: DocumentInfo[] }) {
 
 export function DocumentGridSkeleton({ count = 3 }: { count?: number }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-busy aria-label="Loading documents">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-busy aria-label="Loading documents">
       {Array.from({ length: count }, (_, i) => (
         <DocumentCardSkeleton key={i} />
       ))}

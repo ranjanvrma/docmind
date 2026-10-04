@@ -57,6 +57,11 @@ def run_ingest(paths: list[Path]) -> int:
 
 
 def run_train_classifier(csv_path: Path) -> int:
+    try:
+        import sklearn  # noqa: F401
+    except ImportError:
+        print("Training needs the optional dependencies: pip install -r requirements-train.txt", file=sys.stderr)
+        return 2
     from app.classifier import load_training_data, train_classifier
     from app.embeddings import Embedder
 

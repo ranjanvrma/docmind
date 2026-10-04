@@ -22,9 +22,15 @@ For each answer, `qa.answer_question` computes:
 |---|---|
 | `cited` (per source) | the answer contains `[n]` for this source |
 | `invalid_citations` | numbers the answer cited that were **never provided** (e.g. `[9]` when there were 5 sources) |
-| `answered_from_documents` | the answer does not start with the not-found sentence **and** cites at least one real source |
+| `grounding` | `grounded` (cites at least one provided source), `not_found` (starts with the exact sentence "I could not find the answer in the uploaded documents."), or `ungrounded` (neither) |
+| `answered_from_documents` | `grounding == "grounded"` |
+| `unverified_answer` | the model's raw reply, only when it stayed `ungrounded` after the retry (otherwise `null`) |
 
-Invalid citations are never shown as sources. The UI renders them as a dashed red "9?" marker with a warning explaining that the citation is not real.
+Citations that point only at non-existent source numbers count as `ungrounded`. Invalid citations are never shown as sources. The UI renders them as a dashed red "9?" marker with a warning explaining that the citation is not real.
+
+## Ungrounded replies: one retry, then unverified
+
+`qa.assess_answer` classifies every reply on the server. If the first reply is `ungrounded`, `answer_question` asks the model exactly once more, with a reminder of the rules (`RETRY_REMINDER`) appended to the user prompt. Abstentions (`not_found`) are not retried. If the second reply is still `ungrounded`, it is not presented as an answer: `answer` is set to the fixed text `UNVERIFIED_ANSWER` ("I could not produce an answer that is supported by citations to your documents. Try rephrasing the question, or check the retrieved sources below.") and the model's reply is returned separately in `unverified_answer`. The UI shows that reply only inside a collapsed "Show unverified reply" disclosure, as plain text.
 
 ## Why only context actually sent to the LLM can be cited
 
@@ -34,7 +40,7 @@ If DocMind showed passages the model never saw, a reader would assume the answer
 
 - **Inline chips.** Each `[n]` becomes a chip. Hover or focus shows a card with the document, page and passage; click pins it (works on touch). "Open in document" jumps to the page.
 - **Sources used.** Below each answer, every passage sent to the model is listed, cited first ("2 cited of 5 retrieved"), expandable to the full passage with its similarity score.
-- **Badges.** "Grounded in cited sources", "Not found in your documents", or "No valid citations".
+- **Badges.** Taken from the server's `grounding`: "Grounded · N sources cited", "Not found in your documents", or "Could not be verified".
 
 ## Limits
 

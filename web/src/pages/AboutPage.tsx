@@ -40,7 +40,7 @@ export function AboutPage() {
         <h2 id="components-heading" className="mb-4 text-lg font-semibold tracking-tight">
           Components
         </h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {COMPONENTS.map(({ icon: Icon, title, body }) => (
             <GlowCard key={title} className="p-5">
               <Icon className="size-5 text-accent" />
@@ -51,7 +51,7 @@ export function AboutPage() {
         </div>
       </motion.section>
 
-      <motion.section variants={fadeUp} className="grid gap-5 md:grid-cols-2 [&>*]:min-w-0">
+      <motion.section variants={fadeUp} className="grid grid-cols-1 gap-5 md:grid-cols-2 [&>*]:min-w-0">
         <div className="glass rounded-2xl p-6">
           <h2 className="text-[15px] font-semibold">What DocMind does not claim</h2>
           <ul className="mt-4 space-y-2.5 text-sm text-fg-muted">

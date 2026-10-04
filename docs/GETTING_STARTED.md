@@ -4,7 +4,7 @@
 
 - Python 3.11 or newer
 - Node.js 22 or newer (only to build or develop the web UI)
-- About 1.5 GB of disk space (PyTorch, which sentence-transformers needs, plus the embedding model)
+- Disk space for the Python dependencies and the embedding model (its ONNX export is about 90 MB, downloaded on first start). No PyTorch is needed.
 
 ## 1. Backend
 
@@ -15,9 +15,8 @@ python -m venv .venv
 # Windows:      .venv\Scripts\activate
 # macOS/Linux:  source .venv/bin/activate
 
-# On machines without an NVIDIA GPU, install the small CPU-only PyTorch first:
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements-dev.txt      # runtime dependencies + pytest
+pip install -r requirements-dev.txt      # runtime + training dependencies + pytest
+# or, to only run the app:  pip install -r requirements.txt
 
 cp .env.example .env                     # Windows: copy .env.example .env
 ```
@@ -37,7 +36,7 @@ cd ..
 **Option A, development** (hot reload for UI changes). Use two terminals:
 
 ```bash
-python main.py api                # API on http://127.0.0.1:8000 (the embedding model loads first, ~5-15 s)
+python main.py api                # API on http://127.0.0.1:8000 (the embedding model loads first, a few seconds)
 ```
 
 ```bash
@@ -62,8 +61,8 @@ python main.py api                # serves the UI and the API on http://127.0.0.
 ## 5. Tests
 
 ```bash
-pytest                            # backend: 181 tests
-cd web && npm test                # frontend: 34 tests
+pytest                            # backend: 220 tests
+cd web && npm test                # frontend: 40 tests
 cd web && npm run typecheck       # TypeScript
 ```
 
@@ -71,7 +70,7 @@ cd web && npm run typecheck       # TypeScript
 
 ```bash
 python main.py ingest a.pdf b.pdf                         # index PDFs without the UI
-python main.py train-classifier data/classifier/sample_training.csv
+python main.py train-classifier data/classifier/sample_training.csv   # needs requirements-train.txt
 python evaluation/evaluate.py                              # retrieval evaluation
 python evaluation/evaluate.py --qa                         # + answer evaluation (needs an LLM)
 ```

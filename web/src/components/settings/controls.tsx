@@ -19,7 +19,7 @@ export function Field({
   htmlFor?: string;
 }) {
   return (
-    <div className="grid gap-2 py-4 first:pt-0 last:pb-0 sm:grid-cols-[minmax(0,14rem)_1fr] sm:gap-6">
+    <div className="grid grid-cols-1 gap-2 py-4 first:pt-0 last:pb-0 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)] sm:gap-6">
       <div>
         <label htmlFor={htmlFor} className="flex items-center gap-2 text-sm font-medium">
           {label}

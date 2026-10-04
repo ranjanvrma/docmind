@@ -18,7 +18,8 @@ Code: `app/retrieval.py` (`Retriever.search`), `app/service.py` (`search`, `_res
 |---|---|---|
 | `top_k` | request, else `TOP_K` setting | number of passages (clamped to 1–20) |
 | `doc_ids` | request | restrict to selected documents (the UI's "Search within" filter) |
-| `CHUNK_SIZE`/`CHUNK_OVERLAP` | indexing | what a "passage" is ([EMBEDDINGS.md](EMBEDDINGS.md)) |
+| `CHUNK_SIZE`/`CHUNK_OVERLAP` | indexing | what a "passage" is (default 600/150, size capped at 1200; [EMBEDDINGS.md](EMBEDDINGS.md)) |
+| `MIN_RELEVANCE` | Ask only | passages scoring below it (default 0.15) are not sent to the LLM; Search results are **not** filtered ([RAG_PIPELINE.md](RAG_PIPELINE.md#relevance-floor-and-duplicates)) |
 
 ## Chunking choices that affect retrieval
 
@@ -33,6 +34,6 @@ Code: `app/retrieval.py` (`Retriever.search`), `app/service.py` (`search`, `_res
 - ✗ No keyword (BM25) component: exact codes, names and numbers can be missed.
 - ✗ No re-ranker: the top-k order is the embedding model's order.
 - ✗ Small, English-focused model; inputs are truncated at 256 tokens.
-- ✗ Similarity cannot detect "the answer isn't here": an unanswerable question still returns its nearest passages, sometimes with high scores.
+- ✗ Similarity cannot detect "the answer isn't here": an unanswerable question still returns its nearest passages, sometimes with high scores (0.45–0.77 for on-topic unanswerable questions on the sample set). The Ask relevance floor (0.15) only removes clearly off-topic passages.
 
 Measured quality and its caveats are in [EVALUATION.md](EVALUATION.md).

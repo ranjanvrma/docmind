@@ -28,7 +28,8 @@ export interface Classification {
   scores: Record<string, number>;
 }
 
-export type DocumentStatus = "uploaded" | "processed" | "failed";
+/** queued/processing appear while the server processes a document in the background. */
+export type DocumentStatus = "uploaded" | "queued" | "processing" | "processed" | "failed";
 
 export interface DocumentInfo {
   doc_id: string;
@@ -98,8 +99,12 @@ export interface AskResponse {
   question: string;
   answer: string;
   answered_from_documents: boolean;
+  /** grounded: cites provided sources · not_found: abstained · ungrounded: no valid citation even after a retry */
+  grounding: "grounded" | "not_found" | "ungrounded";
   sources: Source[];
   invalid_citations: number[];
+  /** Raw model reply when it could not be grounded; never shown as an answer. */
+  unverified_answer: string | null;
   model: string | null;
 }
 
@@ -113,6 +118,7 @@ export interface EditableSettings {
   llm_timeout_seconds: number;
   max_context_chars: number;
   top_k: number;
+  min_relevance: number;
   chunk_size: number;
   chunk_overlap: number;
   min_chars_per_page: number;

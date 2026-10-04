@@ -6,7 +6,9 @@ import { HeroVisual } from "@/components/3d/HeroVisual";
 import { fadeUp, stagger } from "@/components/animations/motion";
 import { Spotlight } from "@/components/effects/Background";
 import { Button } from "@/components/ui/button";
-import { Badge, StatusDot } from "@/components/ui/primitives";
+import { Badge, Skeleton, StatusDot } from "@/components/ui/primitives";
+import { formatNumber } from "@/lib/format";
+import { useHealth } from "@/lib/queries";
 
 export function Hero({ onUpload }: { onUpload: () => void }) {
   return (
@@ -34,18 +36,7 @@ export function Hero({ onUpload }: { onUpload: () => void }) {
             </Link>
           </Button>
         </motion.div>
-        <motion.dl variants={fadeUp} className="mt-10 grid max-w-md grid-cols-3 gap-4 border-t border-line pt-6 text-xs">
-          {[
-            ["Extraction", "Page-level"],
-            ["Search", "Semantic"],
-            ["Answers", "Cited"],
-          ].map(([k, v]) => (
-            <div key={k}>
-              <dt className="text-fg-faint">{k}</dt>
-              <dd className="mt-1 font-medium text-fg">{v}</dd>
-            </div>
-          ))}
-        </motion.dl>
+        <WorkspaceStats />
       </motion.div>
       <motion.div
         initial={{ opacity: 0, scale: 0.96 }}
@@ -55,5 +46,29 @@ export function Hero({ onUpload }: { onUpload: () => void }) {
         <HeroVisual />
       </motion.div>
     </section>
+  );
+}
+
+/** Live numbers from /api/health instead of marketing copy. */
+function WorkspaceStats() {
+  const { data, isLoading } = useHealth();
+  const items: [string, string][] = data
+    ? [
+        ["Documents", formatNumber(data.documents)],
+        ["Indexed passages", formatNumber(data.indexed_chunks)],
+        ["Q&A", data.llm_configured ? "Enabled" : "Search only"],
+      ]
+    : [];
+  return (
+    <motion.dl variants={fadeUp} aria-label="Workspace status" className="mt-10 grid max-w-md grid-cols-3 gap-4 border-t border-line pt-6 text-xs">
+      {isLoading
+        ? Array.from({ length: 3 }, (_, i) => <Skeleton key={i} className="h-8" />)
+        : items.map(([k, v]) => (
+            <div key={k}>
+              <dt className="text-fg-faint">{k}</dt>
+              <dd className="mt-1 font-medium tabular-nums text-fg">{v}</dd>
+            </div>
+          ))}
+    </motion.dl>
   );
 }

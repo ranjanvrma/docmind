@@ -1,3 +1,7 @@
 # Development and test dependencies (not installed in the Docker image).
 -r requirements.txt
+-r requirements-train.txt
 pytest>=8.0,<10
+# Only for checking that the ONNX embeddings match the reference implementation
+# (tests/test_embeddings.py skips that test when it is not installed).
+# sentence-transformers>=3.0,<7

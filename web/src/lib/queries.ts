@@ -3,6 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
 import { ApiError } from "./errors";
+import type { DocumentInfo, DocumentStatus } from "./types";
+
+export const isPendingStatus = (status: DocumentStatus) => status === "queued" || status === "processing";
+/** Poll quickly while the server is still processing something, otherwise not at all. */
+const pollWhilePending = (docs: DocumentInfo[] | DocumentInfo | undefined) =>
+  (Array.isArray(docs) ? docs : docs ? [docs] : []).some((d) => isPendingStatus(d.status)) ? 1500 : false;
 
 export const keys = {
   health: ["health"] as const,
@@ -22,11 +28,15 @@ export function useHealth() {
 }
 
 export function useDocuments() {
-  return useQuery({ queryKey: keys.documents, queryFn: api.documents });
+  return useQuery({ queryKey: keys.documents, queryFn: api.documents, refetchInterval: (q) => pollWhilePending(q.state.data) });
 }
 
 export function useDocument(id: string) {
-  return useQuery({ queryKey: keys.document(id), queryFn: () => api.document(id) });
+  return useQuery({
+    queryKey: keys.document(id),
+    queryFn: () => api.document(id),
+    refetchInterval: (q) => pollWhilePending(q.state.data),
+  });
 }
 
 export function useDocumentChunks(id: string, enabled = true) {
@@ -52,7 +62,7 @@ export function useReprocessDocument() {
   const invalidate = useInvalidateDocuments();
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.process([id], true),
+    mutationFn: (id: string) => api.process([id], true, true),
     onSuccess: (_data, id) => {
       client.invalidateQueries({ queryKey: keys.chunks(id) });
       return invalidate();

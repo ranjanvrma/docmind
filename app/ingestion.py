@@ -16,6 +16,11 @@ PDF_MAGIC = b"%PDF-"
 # Document IDs are a prefix of the SHA-256 of the file bytes, so uploading the
 # same file twice (even under another name) maps to the same ID.
 DOC_ID_LENGTH = 16
+# Upper bound on text extracted from one document. A small, highly compressed
+# PDF can expand to an enormous amount of text (a decompression bomb); this
+# keeps memory and embedding time bounded. 5 million characters is roughly
+# 2,000 dense pages, far above MAX_PAGES worth of normal documents.
+MAX_TEXT_CHARS = 5_000_000
 
 
 class IngestionError(Exception):
@@ -72,7 +77,9 @@ def extract_pages(
     try:
         document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     except Exception as exc:  # PyMuPDF raises several exception types for corrupt files
-        raise IngestionError(f"Could not open '{doc_name}' as a PDF: {exc}") from exc
+        # The parser's message stays in the log; users get a stable, generic reason.
+        logger.warning("PyMuPDF could not open doc_id=%s: %s", doc_id, exc)
+        raise IngestionError(f"Could not open '{doc_name}': the file is damaged or not a valid PDF") from exc
 
     with document:
         if document.needs_pass:
@@ -87,6 +94,7 @@ def extract_pages(
         pages: list[PageText] = []
         empty_pages: list[int] = []
         warnings: list[str] = []
+        total_chars = 0
 
         for index in range(document.page_count):
             page_number = index + 1
@@ -100,6 +108,12 @@ def extract_pages(
                 empty_pages.append(page_number)
                 continue
 
+            total_chars += len(text)
+            if total_chars > MAX_TEXT_CHARS:
+                raise IngestionError(
+                    f"'{doc_name}' contains more than {MAX_TEXT_CHARS:,} characters of text, "
+                    "which is more than DocMind processes per document"
+                )
             if len("".join(text.split())) < min_chars_per_page:
                 empty_pages.append(page_number)
                 continue

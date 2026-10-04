@@ -33,7 +33,10 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pandas is imported only while an evaluation runs
+    import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -171,6 +174,8 @@ def run_retrieval_evaluation(settings, ks=(1, 3, 5), dataset_path: Path = DEFAUL
 
 
 def evaluate_retrieval(service, items: list[dict], ks: list[int]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    import pandas as pd
+
     max_k = max(ks)
     rows = []
     for item in items:
@@ -213,6 +218,8 @@ def evaluate_retrieval(service, items: list[dict], ks: list[int]) -> tuple[pd.Da
 
 
 def evaluate_qa(service, items: list[dict], top_k: int) -> tuple[pd.DataFrame, dict]:
+    import pandas as pd
+
     rows = []
     for item in items:
         result = service.ask(item["question"], top_k=top_k)

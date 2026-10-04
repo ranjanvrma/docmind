@@ -34,10 +34,16 @@ def neutralize_source_text(text: str) -> str:
     return _FAKE_SOURCE_HEADER.sub(r"(\1", text)
 
 
+def _single_line(text: str) -> str:
+    # A filename is shown inside the source header; it must not start a new line.
+    return " ".join(text.split())
+
+
 def format_source(number: int, result: SearchResult) -> str:
     chunk = result.chunk
+    doc_name = neutralize_source_text(_single_line(chunk.doc_name))
     return (
-        f"[Source {number}] (document: {chunk.doc_name}, page: {chunk.page_number})\n"
+        f"[Source {number}] (document: {doc_name}, page: {chunk.page_number})\n"
         f"{neutralize_source_text(chunk.text)}"
     )
 

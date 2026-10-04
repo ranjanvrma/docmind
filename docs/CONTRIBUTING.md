@@ -2,15 +2,15 @@
 
 ## Setup
 
-Follow [GETTING_STARTED.md](GETTING_STARTED.md): a Python virtual environment with `requirements-dev.txt`, plus `npm install` in `web/`.
+Follow [GETTING_STARTED.md](GETTING_STARTED.md): a Python virtual environment with `requirements-dev.txt` (which includes `requirements-train.txt` and pytest), plus `npm install` in `web/`.
 
 ## Before you open a pull request
 
 ```bash
-pytest                      # backend: 181 tests
+pytest                      # backend: 220 tests
 cd web
 npm run typecheck
-npm test                    # frontend: 34 tests
+npm test                    # frontend: 40 tests
 npm run build
 ```
 
@@ -23,7 +23,7 @@ All of them should pass. If you change retrieval or chunking, also run `python e
 - New configuration goes in `app/config.py` (and `.env.example`); if it should be editable at runtime, add it to `runtime_settings.EDITABLE`. Security boundaries stay environment-only.
 - Never log document text, queries, prompts, answers or secrets.
 - Persistent writes go through `utils.atomic_write_*`. Storage problems raise a `StorageError` subclass with recovery instructions.
-- Tests: use the `HashingEncoder`/`FakeLLM` fixtures in `tests/conftest.py` so tests stay fast and offline; only `tests/test_embeddings.py` loads the real model.
+- Tests: use the `HashingEncoder`/`FakeLLM` fixtures in `tests/conftest.py` so tests stay fast and offline; only `tests/test_embeddings.py` loads the real model (through ONNX Runtime; its equivalence check against sentence-transformers runs only if that package is installed, which is not a project requirement).
 
 **Frontend**
 - API calls and parsing live in `lib/`; components stay presentational where possible.

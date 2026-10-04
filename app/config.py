@@ -20,6 +20,8 @@ DEFAULT_CATEGORIES = ["Research Paper", "Report", "Assignment", "Notes", "Policy
 VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 VALID_APP_ENVS = {"development", "production"}
+MAX_CHUNK_SIZE = 1200
+MIN_PRODUCTION_TOKEN_LENGTH = 24
 
 
 def _env_str(name: str, default: str) -> str:
@@ -76,7 +78,9 @@ class Settings:
     embedding_batch_size: int = 32
 
     # Chunking (measured in characters)
-    chunk_size: int = 800
+    # 600 beat 800 and 1000 on the sample evaluation set (MRR 0.917 vs 0.838 vs 0.812;
+    # see docs/EVALUATION.md) and suits MiniLM, which was trained on short texts.
+    chunk_size: int = 600
     chunk_overlap: int = 150
 
     # Retrieval
@@ -93,6 +97,10 @@ class Settings:
     llm_temperature: float = 0.0  # sent only by the OpenAI-compatible client; AnthropicClient never passes it
     llm_timeout_seconds: float = 60.0
     max_context_chars: int = 6000
+    # Passages whose cosine similarity to the question is below this are not
+    # sent to the LLM. 0.15 keeps every relevant passage of the sample
+    # evaluation set (lowest: 0.245) while dropping ~40% of irrelevant ones.
+    min_relevance: float = 0.15
 
     # Ingestion limits
     max_upload_mb: int = 25  # per file
@@ -149,6 +157,13 @@ class Settings:
     def validate(self) -> None:
         if self.chunk_size <= 0:
             raise ValueError("CHUNK_SIZE must be positive")
+        if self.chunk_size > MAX_CHUNK_SIZE:
+            raise ValueError(
+                f"CHUNK_SIZE must be at most {MAX_CHUNK_SIZE} characters: the embedding model reads only "
+                "about 256 tokens (~1000 characters), so longer chunks would be silently truncated"
+            )
+        if not 0.0 <= self.min_relevance < 1.0:
+            raise ValueError("MIN_RELEVANCE must be between 0 and 1")
         if not 0 <= self.chunk_overlap < self.chunk_size:
             raise ValueError("CHUNK_OVERLAP must be >= 0 and smaller than CHUNK_SIZE")
         if not 1 <= self.top_k <= self.max_top_k:
@@ -176,6 +191,11 @@ class Settings:
             raise ValueError(
                 "APP_ENV=production requires DOCMIND_API_TOKEN; without it anyone who can reach the server "
                 "can read and delete every document"
+            )
+        if self.app_env == "production" and len(self.api_token) < MIN_PRODUCTION_TOKEN_LENGTH:
+            raise ValueError(
+                f"DOCMIND_API_TOKEN must be at least {MIN_PRODUCTION_TOKEN_LENGTH} characters in production. "
+                'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
             )
         for origin in self.cors_allow_origins:
             if origin == "*" or not origin.startswith(("http://", "https://")) or origin.endswith("/"):
@@ -217,6 +237,7 @@ def load_settings() -> Settings:
         llm_temperature=_env_float("LLM_TEMPERATURE", Settings.llm_temperature),
         llm_timeout_seconds=_env_float("LLM_TIMEOUT_SECONDS", Settings.llm_timeout_seconds),
         max_context_chars=_env_int("MAX_CONTEXT_CHARS", Settings.max_context_chars),
+        min_relevance=_env_float("MIN_RELEVANCE", Settings.min_relevance),
         max_upload_mb=_env_int("MAX_UPLOAD_MB", Settings.max_upload_mb),
         max_request_mb=_env_int("MAX_REQUEST_MB", Settings.max_request_mb),
         max_pages=_env_int("MAX_PAGES", Settings.max_pages),

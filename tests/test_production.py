@@ -349,3 +349,47 @@ def test_unwritable_data_dir_is_reported_as_storage_error(tmp_path, fake_embedde
     monkeypatch.setattr(Path, "write_bytes", deny)
     with pytest.raises(StorageError, match="not writable"):
         DocMindService(Settings(data_dir=tmp_path / "data"), embedder=fake_embedder)
+
+
+def test_production_rejects_short_tokens(tmp_path):
+    from app.config import Settings
+
+    with pytest.raises(ValueError, match="at least 24"):
+        Settings(data_dir=tmp_path, app_env="production", api_token="short-token").validate()
+
+
+@pytest.mark.parametrize(
+    "url, address, ok",
+    [
+        ("https://openrouter.ai/api/v1", "104.18.2.115", True),
+        ("http://openrouter.ai/api/v1", "104.18.2.115", False),  # plain HTTP
+        ("https://metadata.internal/v1", "169.254.169.254", False),  # cloud metadata
+        ("https://intranet.example/v1", "10.0.0.5", False),
+        ("https://localhost:11434/v1", "127.0.0.1", False),
+        ("https://v6.example/v1", "::1", False),
+    ],
+)
+def test_ui_cannot_point_the_llm_at_private_addresses_in_production(tmp_path, fake_embedder, monkeypatch, url, address, ok):
+    import socket
+
+    from app import runtime_settings
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(None, None, None, "", (address, 443))])
+    settings = Settings(data_dir=tmp_path, app_env="production", api_token="t" * 32)
+    if ok:
+        runtime_settings.apply_changes(settings, {"llm_base_url": url})
+    else:
+        with pytest.raises(ValueError):
+            runtime_settings.apply_changes(settings, {"llm_base_url": url})
+    # Development keeps local endpoints such as Ollama usable.
+    runtime_settings.apply_changes(Settings(data_dir=tmp_path), {"llm_base_url": "http://localhost:11434/v1"})
+
+
+def test_ssrf_guard_applies_through_the_api(tmp_path, fake_embedder, fake_llm, monkeypatch):
+    import socket
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(None, None, None, "", ("169.254.169.254", 443))])
+    settings = Settings(data_dir=tmp_path / "data", app_env="production", api_token="t" * 32)
+    with TestClient(create_app(DocMindService(settings, embedder=fake_embedder, llm=fake_llm))) as c:
+        r = c.patch("/api/settings", json={"llm_base_url": "https://evil.example/v1"}, headers={"X-API-Key": "t" * 32})
+    assert r.status_code == 422 and "public host" in r.json()["detail"]

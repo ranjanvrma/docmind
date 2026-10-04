@@ -23,16 +23,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import joblib
 import numpy as np
-import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report, f1_score
-from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from app.embeddings import Embedder, normalize_rows
 from app.models import ClassificationResult
+
+if TYPE_CHECKING:  # heavy libraries are imported only when a trained model is used
+    import pandas as pd
+    from sklearn.linear_model import LogisticRegression
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,18 @@ class DocumentClassifier:
         return "supervised" if self._supervised is not None else "zero-shot"
 
     def _load(self, path: Path) -> None:
-        # joblib uses pickle: only load model files you created yourself.
+        try:
+            import joblib
+        except ImportError:
+            logger.warning(
+                "A trained classifier exists at %s but scikit-learn/joblib are not installed "
+                "(pip install -r requirements-train.txt); using zero-shot classification",
+                path,
+            )
+            return
+
+        # joblib uses pickle: only load model files you created yourself. The
+        # API never writes this file; only `python main.py train-classifier` does.
         bundle = joblib.load(path)
         if bundle.get("embedding_model") != self.embedder.model_name:
             logger.warning(
@@ -105,6 +116,8 @@ class DocumentClassifier:
 
 
 def load_training_data(csv_path: Path) -> pd.DataFrame:
+    import pandas as pd
+
     df = pd.read_csv(csv_path)
     missing = {"text", "label"} - set(df.columns)
     if missing:
@@ -125,6 +138,11 @@ def train_classifier(embedder: Embedder, df: pd.DataFrame, output_path: Path) ->
     on the provided data. With a small or synthetic dataset they say very
     little about real-world performance.
     """
+    import joblib
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import accuracy_score, classification_report, f1_score
+    from sklearn.model_selection import StratifiedKFold, cross_val_predict
+
     X = embedder.embed(df["text"].tolist())
     y = df["label"].to_numpy()
 

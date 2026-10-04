@@ -114,8 +114,12 @@ class OpenAICompatibleClient(LLMClient):
         base_url: str = "",
         temperature: float = 0.0,
         transport: httpx.BaseTransport | None = None,
+        max_attempts: int = 2,
+        sleep=time.sleep,
     ):
         self.model = model
+        self.max_attempts = max(1, max_attempts)
+        self._sleep = sleep
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._client = httpx.Client(
@@ -124,6 +128,31 @@ class OpenAICompatibleClient(LLMClient):
             timeout=timeout,
             transport=transport,
         )
+
+    def _post_with_retry(self, payload: dict) -> httpx.Response:
+        """POST once more after a transient failure (rate limit, 5xx, network).
+
+        Free models behind routers fail transiently quite often, and a retry
+        through ``openrouter/free`` may be served by a different model.
+        """
+        for attempt in range(1, self.max_attempts + 1):
+            response = None
+            try:
+                response = self._client.post("/chat/completions", json=payload)
+            except httpx.HTTPError as exc:
+                if attempt == self.max_attempts:
+                    raise LLMError(f"Could not reach the LLM endpoint: {exc.__class__.__name__}") from exc
+            else:
+                if response.status_code not in RETRYABLE_STATUS or attempt == self.max_attempts:
+                    return response
+            delay = _retry_delay(response, attempt)
+            logger.warning(
+                "LLM request failed (%s); retrying in %.1fs",
+                response.status_code if response is not None else "network error",
+                delay,
+            )
+            self._sleep(delay)
+        raise AssertionError("unreachable")
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         payload = {
@@ -135,10 +164,7 @@ class OpenAICompatibleClient(LLMClient):
                 {"role": "user", "content": user_prompt},
             ],
         }
-        try:
-            response = self._client.post("/chat/completions", json=payload)
-        except httpx.HTTPError as exc:
-            raise LLMError(f"Could not reach the LLM endpoint: {exc.__class__.__name__}") from exc
+        response = self._post_with_retry(payload)
 
         if response.status_code == 401:
             raise LLMError("The LLM endpoint rejected the API key (check LLM_API_KEY)")
@@ -164,6 +190,19 @@ class OpenAICompatibleClient(LLMClient):
             logger.warning("LLM response was truncated at max_tokens=%d", self.max_tokens)
             text += TRUNCATION_NOTICE
         return text
+
+
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
+    """Seconds to wait before retrying: Retry-After if small, else a short backoff."""
+    if response is not None:
+        try:
+            return min(max(float(response.headers.get("retry-after", "")), 0.0), 5.0)
+        except ValueError:
+            pass
+    return 1.0 * attempt
 
 
 def create_llm_client(settings: Settings) -> LLMClient:

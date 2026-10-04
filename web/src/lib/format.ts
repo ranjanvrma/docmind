@@ -48,3 +48,7 @@ export function pad2(n: number): string {
 export function pluralize(count: number, word: string, plural = `${word}s`): string {
   return `${count} ${count === 1 ? word : plural}`;
 }
+
+export function formatNumber(n: number): string {
+  return n.toLocaleString("en-US");
+}

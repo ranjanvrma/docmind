@@ -9,7 +9,7 @@ Rough time budget: 2–3 focused days for stages 1–8, 2 days for 9–13, 1 day
 ### Stage 1. Python architecture
 - **Read:** `app/service.py` (all of it), `app/models.py`, `app/config.py`, `main.py`
 - **Learn:** layered architecture (UI → API → service → modules); dataclasses vs Pydantic models; dependency injection by constructor (`DocMindService(settings, embedder=..., llm=...)`); `lru_cache` singletons; configuration from the environment.
-- **Explain before moving on:** the lifecycle `uploaded → processed | failed`; why the service is the only orchestrator; which entry points (API, CLI, evaluation, tests) call it; how tests swap in fakes.
+- **Explain before moving on:** the lifecycle `uploaded → (queued → processing →) processed | failed`, and when the background worker is used; why the service is the only orchestrator; which entry points (API, CLI, evaluation, tests) call it; how tests swap in fakes.
 - **Interview questions:** "Why a service layer?" "How is configuration injected?" (INTERVIEW_PREP F1, F2)
 
 ### Stage 2. PDF processing
@@ -27,14 +27,14 @@ Rough time budget: 2–3 focused days for stages 1–8, 2 days for 9–13, 1 day
 ### Stage 4. Chunking
 - **Read:** `app/chunking.py`, `tests/test_chunking.py`
 - **Learn:** greedy sentence packing, whole-sentence overlap, the long-sentence fallback, determinism, per-page chunking; the chunk ID format `doc:p3:c0`.
-- **Explain before moving on:** trace `chunk_text` by hand on a 5-sentence paragraph with size 100 and overlap 40; explain why 800 characters (the 256-token model limit); explain the page-boundary trade-off.
+- **Explain before moving on:** trace `chunk_text` by hand on a 5-sentence paragraph with size 100 and overlap 40; explain why the default is 600 characters and the cap 1200 (the 256-token model limit, and the chunk-size sweep in `docs/EVALUATION.md`); explain the page-boundary trade-off.
 - **Interview questions:** "Why chunk?" "Size and overlap trade-off?" (B1, B2, B3, D3)
 
 ### Stage 5. Embeddings
 - **Read:** `app/embeddings.py`, `tests/test_embeddings.py`, `tests/conftest.py` (`HashingEncoder`)
-- **Learn:** what an embedding is; batch encoding; L2 normalisation; model caching; the `EncoderModel` protocol used for fakes.
-- **Explain before moving on:** input and output shapes (`list[str]` → `(n, 384)` float32, unit rows); why normalise; why queries and documents must use the same model; why tests use a hashing encoder.
-- **Interview questions:** "What is an embedding?" "Why 384?" (A3)
+- **Learn:** what an embedding is; batch encoding (length-sorted batches); L2 normalisation; model caching (`load_encoder`); the `EncoderModel` protocol used for fakes; ONNX Runtime `InferenceSession`, the `tokenizers` library and `huggingface_hub` downloads.
+- **Explain before moving on:** input and output shapes (`list[str]` → `(n, 384)` float32, unit rows); why normalise; why queries and documents must use the same model; why tests use a hashing encoder; how `OnnxSentenceEncoder` reproduces the sentence-transformers pipeline and how equivalence was verified; why PyTorch was removed (memory and load time, `docs/EMBEDDINGS.md`).
+- **Interview questions:** "What is an embedding?" "Why 384?" "Why ONNX Runtime instead of PyTorch?" (A3, H1)
 
 ### Stage 6. Cosine similarity
 - **Read:** `embeddings.normalize_rows`, notebook cells 5–6
@@ -57,49 +57,49 @@ Rough time budget: 2–3 focused days for stages 1–8, 2 days for 9–13, 1 day
 ### Stage 9. Transformers (only what DocMind uses)
 - **Read:** `docs/CODE_WALKTHROUGH.md` Part 4; the model card for `sentence-transformers/all-MiniLM-L6-v2`
 - **Learn:** WordPiece tokenisation (uncased; 256 limit); token vs contextual embeddings; self-attention (query/key/value, softmax); encoder layers (6 here); mean pooling; contrastive training for sentence similarity.
-- **Explain before moving on:** what happens inside `model.encode("...")`, step by step; why plain BERT isn't ideal for similarity; that DocMind fine-tunes nothing and uses PyTorch only indirectly.
+- **Explain before moving on:** what happens inside `OnnxSentenceEncoder.encode("...")`, step by step; why plain BERT isn't ideal for similarity; that DocMind fine-tunes nothing and does not use PyTorch at all (it runs an existing ONNX export).
 - **Interview questions:** "How does a transformer make a sentence embedding?" "What is attention?" (E1, E2, E3)
 
 ### Stage 10. RAG
 - **Read:** `app/prompts.py`, `app/qa.py`, `service.ask`, `tests/test_qa.py`
-- **Learn:** context construction with a budget; source numbering; the system-prompt rules; the abstention sentence; citation parsing and validation; `answered_from_documents`.
-- **Explain before moving on:** trace a question end to end; why the sources are exactly the included chunks; what is *not* verified (claim support); **finding F5 (fixed)**: why only one- or two-digit markers count as citations; **F6** (still open); what happens when nothing is retrieved.
-- **Interview questions:** "What is RAG?" "How do you reduce hallucination?" "What if the answer isn't in the documents?" (E4, E5, D4, D5, C3)
+- **Learn:** the relevance floor and de-duplication (`select_passages`); context construction with a budget; source numbering; the system-prompt rules; the abstention sentence; citation parsing and validation; `grounding` (`grounded` / `not_found` / `ungrounded`), the single retry with `RETRY_REMINDER`, `UNVERIFIED_ANSWER` and `unverified_answer`; `answered_from_documents == (grounding == "grounded")`.
+- **Explain before moving on:** trace a question end to end; why the sources are exactly the included chunks; what is *not* verified (claim support); **finding F5 (fixed)**: why only one- or two-digit markers count as citations; **F6** (still open); what happens when nothing is retrieved or nothing passes the floor; why the floor (0.15) cannot replace abstention; what the user sees for an ungrounded reply.
+- **Interview questions:** "What is RAG?" "How do you reduce hallucination?" "What if the answer isn't in the documents?" "What if the reply cites nothing?" (E4, E5, D4, D5, C3, H2, H3)
 
 ### Stage 11. LLMs
 - **Read:** `app/llm.py`, `.env.example`
-- **Learn:** the abstract base class + provider implementations; the factory function; error mapping to 502/503; text vs non-text content blocks; stop reasons (`refusal`, `max_tokens`); API keys from the environment.
-- **Explain before moving on:** how to add a new provider; why the LLM client is lazy; that the Anthropic path is untested and that `LLM_TEMPERATURE` only affects the OpenAI-compatible client.
-- **Interview questions:** "How is the provider abstracted?" "How are LLM errors handled?" (C7, G2)
+- **Learn:** the abstract base class + provider implementations; the factory function; error mapping to 502/503; the single transport retry for 429/5xx/network errors (`Retry-After`, capped at 5 s); router models and the "routed model" log line; text vs non-text content blocks; stop reasons (`refusal`, `max_tokens`); API keys from the environment; the SSRF guard on UI-set base URLs (`runtime_settings.check_public_endpoint`).
+- **Explain before moving on:** how to add a new provider; why the LLM client is lazy; that the Anthropic path has never been run live and that `LLM_TEMPERATURE` only affects the OpenAI-compatible client; what the `openrouter/free` live test showed (`docs/LLM_INTEGRATION.md`).
+- **Interview questions:** "How is the provider abstracted?" "How are LLM errors handled?" "Isn't a configurable base URL an SSRF risk?" (C7, G2, H5)
 
 ### Stage 12. Classification
 - **Read:** `app/classifier.py`, `data/classifier/README.md`, `data/classifier/sample_training.csv`, `tests/test_classifier.py`
-- **Learn:** mean-pooled document vectors; zero-shot by description similarity; logistic regression; stratified k-fold CV; joblib (pickle) safety.
+- **Learn:** mean-pooled document vectors; zero-shot by description similarity; logistic regression; stratified k-fold CV; joblib (pickle) safety; why scikit-learn/joblib are optional (`requirements-train.txt`) and what happens to a trained model file without them.
 - **Explain before moving on:** both modes and when each is used; why CV on 48 synthetic texts isn't a performance claim; the train/inference representation mismatch; why the trained model was removed (it mislabelled the ML notes).
 - **Interview questions:** "How does your classifier work?" "Zero-shot vs supervised?" (E7, E8)
 
 ### Stage 13. Evaluation
 - **Read:** `evaluation/evaluate.py`, `evaluation/datasets/sample_eval.json`, `evaluation/make_sample_docs.py`, `tests/test_evaluation.py`; run `python evaluation/evaluate.py` and open `evaluation/results/retrieval_per_query.csv`
 - **Learn:** Hit@K, Precision@K, Recall@K, MRR; page-level labels; the isolated temp index; token F1; baselines, held-out splits, confidence intervals.
-- **Explain before moving on:** compute each metric by hand for one query from the CSV; why P@5 = 0.24 is expected; every reason the demo numbers aren't evidence; what a real evaluation would look like (CODE_WALKTHROUGH Part 8).
+- **Explain before moving on:** compute each metric by hand for one query from the CSV; why P@5 = 0.24 (at 800/150) is expected; what the chunk-size sweep showed and why it is a weak signal; every reason the demo numbers aren't evidence; what a real evaluation would look like (CODE_WALKTHROUGH Part 8).
 - **Interview questions:** "How do you know retrieval works?" "Precision vs recall?" (D7, C5, C8, E6)
 
 ### Stage 14. FastAPI
 - **Read:** `app/api.py`, `models.py` (API schemas), `tests/test_api.py`; start `python main.py api` and use `/docs`
-- **Learn:** app factory; `lifespan`; `Depends`; Pydantic validation → 422; `response_model`; exception handlers; sync routes in a thread pool; multipart uploads (and Starlette's temp-file spooling).
-- **Explain before moving on:** every endpoint's method, body, status codes and service call (CODE_WALKTHROUGH Part 9); why routes contain no business logic.
-- **Interview questions:** "List your endpoints." "Status codes?" "Role of Pydantic?" (G1, G2, B8)
+- **Learn:** app factory; `lifespan`; `Depends`; Pydantic validation → 422; `response_model`; exception handlers; sync routes in a thread pool; multipart uploads (and Starlette's temp-file spooling); `202` background processing (`service.enqueue`, the worker thread, restart recovery, `tests/test_background.py`).
+- **Explain before moving on:** every endpoint's method, body, status codes and service call (`docs/API.md`; CODE_WALKTHROUGH Part 9 predates some of them); why routes contain no business logic; the lock order `_write_lock` then `_queue_lock`.
+- **Interview questions:** "List your endpoints." "Status codes?" "Role of Pydantic?" "What if the server restarts during processing?" (G1, G2, B8, H4)
 
 ### Stage 15. Web frontend (React)
 - **Read:** `docs/FRONTEND.md`, then `web/src/lib/api.ts`, `lib/errors.ts`, `lib/markdown.ts`, `components/qa/AnswerContent.tsx`, `components/citations/CitationChip.tsx`, `components/upload/UploadZone.tsx`, `pages/SettingsPage.tsx`; run `cd web && npm run dev`
-- **Learn:** React components and hooks; TanStack Query; same-origin API calls and the Vite proxy; why untrusted text is rendered as React text; Motion basics and reduced motion; how the 3D scene is lazy-loaded with a fallback.
-- **Explain before moving on:** each flow (upload with real progress, search, ask with citation chips, settings + evaluation lab); why the token never lives in the bundle; why 5xx error details are hidden; why the pipeline view doesn't show fake percentages.
+- **Learn:** React components and hooks; TanStack Query (including conditional polling); same-origin API calls and the Vite proxy; why untrusted text is rendered as React text; Motion basics and reduced motion; route code-splitting with React Router `lazy`; how the 3D scene is lazy-loaded with a fallback.
+- **Explain before moving on:** each flow (upload with real progress, then background processing with live status; search; ask with citation chips and grounding badges; settings + evaluation lab); why the token never lives in the bundle; why 5xx error details are hidden; why the pipeline view doesn't show fake percentages; how an unverified reply is shown.
 - **Interview questions:** "How does the web UI talk to the backend?" (G3)
 
 ### Stage 16. Docker
 - **Read:** `Dockerfile`, `docker-compose.yml`, `.dockerignore`
-- **Learn:** base images; layer order (CPU torch first); baking the model in; non-root users; bind mounts; `env_file`; compose service DNS; healthchecks.
-- **Explain before moving on:** what each line does; how the UI container finds the API; **what's unverified** (CODE_WALKTHROUGH Part 13). Ideally, install Docker and actually run `docker compose up --build` before claiming it works.
+- **Learn:** multi-stage builds; base images; layer order (requirements before code); baking only the four ONNX model files in, then `HF_HUB_OFFLINE=1`; non-root users; bind mounts; `env_file`; healthchecks.
+- **Explain before moving on:** what each line does; why one image serves both UI and API (same origin); why there is no PyTorch step; **what's unverified** (CODE_WALKTHROUGH Part 13). Ideally, install Docker and actually run `docker compose up --build` before claiming it works.
 - **Interview questions:** "How is it containerised? Does it work?" "Is it production-ready?" (G6, G7)
 
 ---

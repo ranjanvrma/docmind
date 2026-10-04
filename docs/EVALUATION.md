@@ -28,17 +28,24 @@ For each query, the top max(K) chunks are retrieved; a chunk is relevant if it c
 
 ## Measured results (demo dataset only)
 
-Model `all-MiniLM-L6-v2`. Measured with `python evaluation/evaluate.py` and in the Evaluation lab:
+Model `all-MiniLM-L6-v2` (ONNX Runtime; identical metrics to the earlier PyTorch runtime, see [EMBEDDINGS.md](EMBEDDINGS.md#equivalence-with-sentence-transformers)). Chunk-size sweep, measured with `python evaluation/evaluate.py` and in the Evaluation lab:
 
-| Setting | Hit@1 | Hit@3 | Hit@5 | MRR |
+| Chunk / overlap | Hit@1 | Hit@3 | Hit@5 | MRR |
 |---|---|---|---|---|
-| chunk 800 / overlap 150 (default) | 0.70 | 0.95 | 1.00 | 0.838 |
-| chunk 600 / overlap 150 | 0.85 | 1.00 | 1.00 | 0.92 |
+| 400 / 80 | 0.85 | 0.95 | 1.00 | 0.893 |
+| 500 / 100 | 0.85 | 1.00 | 1.00 | 0.908 |
+| 600 / 120 | 0.75 | 1.00 | 1.00 | 0.875 |
+| **600 / 150 (current default)** | **0.85** | **1.00** | **1.00** | **0.917** |
+| 700 / 140 | 0.70 | 1.00 | 1.00 | 0.842 |
+| 800 / 150 (previous default) | 0.70 | 0.95 | 1.00 | 0.838 |
+| 1000 / 150 | 0.65 | 0.95 | 1.00 | 0.812 |
 
-Precision@5 at the default is 0.24. That is expected, not a defect: most queries have a single relevant page among 11 chunks, so at least four of five results must be irrelevant.
+The trend is that smaller chunks retrieve better with MiniLM, which was trained on short texts; 600/150 had the best MRR, so it became the default (previously 800/150). Existing indexes keep their old chunks until they are re-indexed.
+
+Precision@5 at the previous default (800/150) was 0.24. That is expected, not a defect: most queries have a single relevant page among 11 chunks, so at least four of five results must be irrelevant.
 
 **Why these numbers are not evidence of real-world quality**
-- 20 queries: one query changes Hit@1 by 5 points; the difference between the two settings above is 3 queries.
+- 20 queries: one query changes Hit@1 by 5 points (0.05); the difference between 600/150 and 800/150 is 3 queries, and between 600/120 and 600/150 only 2. The ranking of settings is noisy.
 - The same person wrote the documents and the questions, so the wording overlaps unrealistically.
 - With only 11–18 chunks, even random ordering would often hit within the top 5.
 - Clean, single-column synthetic text; no tables, scans or long documents.
@@ -48,8 +55,9 @@ Use the lab to **compare settings**, then confirm on real data.
 
 ## Qualitative observations
 
-- Rank-1 misses at the default were mostly vocabulary mismatches ("online" vs "reachable", "memorising" vs "overfits").
+- Rank-1 misses at 800/150 (the previous default) were mostly vocabulary mismatches ("online" vs "reachable", "memorising" vs "overfits").
 - Retrieval scores cannot separate answerable from unanswerable questions: "parental leave policy" (not in any document) retrieved a passage scoring 0.52, higher than some correct answers. The "not found" behaviour therefore depends on the LLM.
+- Score distribution used to choose the Q&A relevance floor (`MIN_RELEVANCE` = 0.15): all 24 labelled-relevant passages in the top 5 scored ≥ 0.245 (none below 0.2); 31 of 76 irrelevant top-5 passages scored below 0.15; clearly off-topic questions had top scores of 0.08–0.18; on-topic unanswerable questions scored 0.45–0.77. The floor removes obvious noise and lets clearly off-topic questions abstain without an LLM call, but cannot replace the LLM's abstention.
 
 ## Answer (QA) evaluation
 
@@ -60,7 +68,7 @@ Use the lab to **compare settings**, then confirm on real data.
 - **citation precision**: cited sources that come from relevant pages;
 - **invalid citations**.
 
-**Status: the QA evaluation has not been run.** A live LLM was spot-checked by hand (see [LLM_INTEGRATION.md](LLM_INTEGRATION.md#verification-status)), but no QA metrics are claimed.
+**Status: the QA evaluation script has not been run.** Live LLMs were spot-checked by hand through the API (one pinned OpenRouter model, and `openrouter/free` with 8 questions; see [LLM_INTEGRATION.md](LLM_INTEGRATION.md#verification-status)), but no QA metrics are claimed.
 
 ## Better methodology for real use
 

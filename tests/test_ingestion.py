@@ -102,3 +102,18 @@ def test_service_marks_textless_pdf_as_failed(service):
     assert processed.status == "failed"
     assert "No text" in processed.error
     assert service.store.size == 0
+
+
+def test_malformed_pdf_error_does_not_expose_parser_internals():
+    with pytest.raises(IngestionError) as info:
+        extract_pages(b"%PDF-1.7\n garbage that is not a pdf body", "broken.pdf")
+    assert str(info.value) == "Could not open 'broken.pdf': the file is damaged or not a valid PDF"
+
+
+def test_text_volume_is_capped(monkeypatch):
+    from app import ingestion
+
+    monkeypatch.setattr(ingestion, "MAX_TEXT_CHARS", 100)
+    pdf = make_pdf(["A sentence with enough words to count as real page text. " * 3] * 3)
+    with pytest.raises(IngestionError, match="more than 100 characters"):
+        ingestion.extract_pages(pdf, "big.pdf")

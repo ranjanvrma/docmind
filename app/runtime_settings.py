@@ -21,9 +21,12 @@ key for it too, so a token holder cannot redirect the server's key elsewhere.
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
 import json
 import logging
+import socket
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 from app.config import Settings
@@ -45,6 +48,7 @@ EDITABLE: dict[str, type] = {
     "llm_api_key": str,  # write-only
     "max_context_chars": int,
     "top_k": int,
+    "min_relevance": float,
     "chunk_size": int,
     "chunk_overlap": int,
     "min_chars_per_page": int,
@@ -84,6 +88,30 @@ def _coerce(name: str, value: Any) -> Any:
     return expected(value)
 
 
+def check_public_endpoint(url: str) -> None:
+    """Reject LLM base URLs that would make the server call private addresses.
+
+    Applied in production to base URLs set through the API (the operator's own
+    LLM_BASE_URL is trusted). Without it, anyone holding the access token could
+    point the server at internal services or cloud metadata endpoints (SSRF).
+    DNS is checked when the setting is saved; DNS rebinding afterwards is not
+    covered (see docs/SECURITY.md).
+    """
+    if not url:
+        return
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname:
+        raise ValueError("In production, an LLM base URL set from the UI must be an https:// URL")
+    try:
+        infos = socket.getaddrinfo(parts.hostname, parts.port or 443, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"LLM base URL host '{parts.hostname}' could not be resolved") from exc
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split("%")[0])
+        if not address.is_global:
+            raise ValueError("LLM base URL must point to a public host, not a private, loopback or link-local address")
+
+
 def apply_changes(settings: Settings, changes: dict[str, Any]) -> tuple[Settings, dict[str, Any]]:
     """Validate ``changes`` against ``settings``; return (new settings, coerced changes).
 
@@ -95,6 +123,8 @@ def apply_changes(settings: Settings, changes: dict[str, Any]) -> tuple[Settings
     coerced = {name: _coerce(name, value) for name, value in changes.items()}
     updated = dataclasses.replace(settings, **coerced)
     updated.validate()
+    if settings.app_env == "production" and coerced.get("llm_base_url"):
+        check_public_endpoint(coerced["llm_base_url"])
     return updated, coerced
 
 

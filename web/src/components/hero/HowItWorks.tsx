@@ -5,7 +5,7 @@ import { Fragment } from "react";
 import { fadeUp, stagger } from "@/components/animations/motion";
 
 const STEPS = [
-  { icon: FileText, title: "Document", detail: "PyMuPDF extracts text page by page; it is cleaned and split into ~800-character chunks." },
+  { icon: FileText, title: "Document", detail: "PyMuPDF extracts text page by page; it is cleaned and split into ~600-character chunks." },
   { icon: Binary, title: "Embedding", detail: "all-MiniLM-L6-v2 maps each chunk to a 384-dimensional unit vector." },
   { icon: Database, title: "Vector search", detail: "FAISS IndexFlatIP: exact inner product, which equals cosine similarity here." },
   { icon: Layers, title: "Retrieved context", detail: "The top-k passages, numbered as [Source n] with document and page." },
@@ -21,7 +21,7 @@ export function HowItWorks({ compact = false }: { compact?: boolean }) {
       initial="hidden"
       whileInView="show"
       viewport={{ once: true, margin: "-80px" }}
-      className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(5,minmax(0,1fr)_1.75rem)_minmax(0,1fr)] lg:items-stretch lg:gap-0"
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(5,minmax(0,1fr)_1.75rem)_minmax(0,1fr)] lg:items-stretch lg:gap-0"
     >
       {STEPS.map(({ icon: Icon, title, detail }, i) => (
         <Fragment key={title}>

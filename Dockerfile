@@ -1,5 +1,5 @@
 # DocMind: one image that serves the API and the built React UI on one port.
-# Stage 1 builds the UI with Node; stage 2 is the Python runtime. CPU-only.
+# Stage 1 builds the UI with Node; stage 2 is the Python runtime (CPU-only, no PyTorch).
 
 # ---------------------------------------------------------------- web build
 FROM node:22-slim AS web
@@ -20,18 +20,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install the CPU build of PyTorch first; the default wheel pulls in ~2 GB of CUDA libraries.
-RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<3"
-
+# No PyTorch: the embedding model runs on ONNX Runtime (CPU).
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Bake the embedding model into the image, then run offline so containers never
-# download at startup. To use a different model, rebuild with
+# Bake the embedding model's ONNX export and tokenizer (~90 MB) into the image,
+# then run offline so containers never download at startup. To use another
+# sentence-transformers model that ships onnx/model.onnx, rebuild with
 # --build-arg EMBEDDING_MODEL=<name> (the runtime EMBEDDING_MODEL defaults to it).
 ARG EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
+ENV EMBEDDING_MODEL=${EMBEDDING_MODEL} \
+    HF_HUB_DISABLE_TELEMETRY=1
+RUN python -c "import sys; from huggingface_hub import hf_hub_download; [hf_hub_download(sys.argv[1], f) for f in ('onnx/model.onnx', 'tokenizer.json', 'sentence_bert_config.json', '1_Pooling/config.json')]" "${EMBEDDING_MODEL}"
 ENV HF_HUB_OFFLINE=1
 
 COPY app ./app

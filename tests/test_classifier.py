@@ -70,3 +70,20 @@ def test_training_requires_two_labels(tmp_path):
     single.write_text("text,label\na,X\nb,X\n")
     with pytest.raises(ValueError, match="two distinct labels"):
         load_training_data(single)
+
+
+def test_trained_model_is_ignored_without_scikit_learn(fake_embedder, tmp_path, monkeypatch):
+    import builtins
+
+    path = tmp_path / "classifier.joblib"
+    path.write_bytes(b"not needed")
+    real_import = builtins.__import__
+
+    def no_joblib(name, *args, **kwargs):
+        if name == "joblib":
+            raise ImportError("not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_joblib)
+    classifier = DocumentClassifier(fake_embedder, ["A", "B"], path)
+    assert classifier.mode == "zero-shot"

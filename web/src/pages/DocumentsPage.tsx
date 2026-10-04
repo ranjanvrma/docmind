@@ -23,7 +23,7 @@ export function DocumentsPage() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (data ?? [])
-      .filter((d) => (status === "all" ? true : d.status === status))
+      .filter((d) => (status === "all" ? true : status === "uploaded" ? d.status !== "processed" && d.status !== "failed" : d.status === status))
       .filter((d) => !q || d.filename.toLowerCase().includes(q) || d.classification?.label.toLowerCase().includes(q))
       .sort((a, b) => b.uploaded_at.localeCompare(a.uploaded_at));
   }, [data, query, status]);

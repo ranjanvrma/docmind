@@ -20,7 +20,7 @@ Search: `index.search(query, k)` returns `(scores, ids)`; IDs of `-1` are paddin
 
 ## Similarity scores
 
-Because all vectors are unit length, the inner product is the **cosine similarity**, in [−1, 1]. Higher means closer in meaning. Scores are relative to the model and the corpus: in this project's tests, correct top matches scored roughly 0.3–0.6, so there is no universal "relevant" threshold. DocMind ranks rather than thresholds. The UI labels the score **"Similarity"**, never "accuracy" or "confidence".
+Because all vectors are unit length, the inner product is the **cosine similarity**, in [−1, 1]. Higher means closer in meaning. Scores are relative to the model and the corpus: in this project's tests, correct top matches scored roughly 0.3–0.6, so there is no universal "relevant" threshold. DocMind ranks; only Q&A applies a deliberately low floor (`MIN_RELEVANCE`, default 0.15) to drop clearly off-topic passages ([RAG_PIPELINE.md](RAG_PIPELINE.md#relevance-floor-and-duplicates)). The UI labels the score **"Similarity"**, never "accuracy" or "confidence".
 
 ## Persistence
 

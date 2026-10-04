@@ -65,7 +65,9 @@ class ClassificationResult:
     scores: dict[str, float] = field(default_factory=dict)
 
 
-DocumentStatus = Literal["uploaded", "processed", "failed"]
+# uploaded -> queued -> processing -> processed | failed. queued/processing occur
+# only with background processing; a synchronous request returns the result.
+DocumentStatus = Literal["uploaded", "queued", "processing", "processed", "failed"]
 
 
 @dataclass
@@ -166,6 +168,10 @@ class ProcessRequest(BaseModel):
         default=None, description="Documents to process. Omit to process every unprocessed document."
     )
     force: bool = Field(default=False, description="Re-process documents that are already indexed.")
+    background: bool = Field(
+        default=False,
+        description="Return 202 immediately and process on the server's worker; poll GET /api/documents for status.",
+    )
 
 
 class ProcessItem(BaseModel):
@@ -246,9 +252,13 @@ class SourceOut(SearchHit):
 class AskResponse(BaseModel):
     question: str
     answer: str
-    answered_from_documents: bool
+    answered_from_documents: bool  # True only when grounding == "grounded"
+    grounding: Literal["grounded", "not_found", "ungrounded"]
     sources: list[SourceOut]
     invalid_citations: list[int]
+    # The model's raw reply when it could not be grounded in the sources even
+    # after a retry. Not an answer: shown to users only as unverified output.
+    unverified_answer: str | None = None
     model: str | None
 
 
@@ -267,6 +277,7 @@ class SettingsUpdate(BaseModel):
     llm_api_key: str | None = Field(default=None, max_length=500)  # write-only
     max_context_chars: int | None = None
     top_k: int | None = None
+    min_relevance: float | None = None
     chunk_size: int | None = None
     chunk_overlap: int | None = None
     min_chars_per_page: int | None = None

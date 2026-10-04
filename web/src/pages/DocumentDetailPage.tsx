@@ -94,13 +94,12 @@ export function DocumentDetailPage() {
           <Button
             variant="ghost"
             size="sm"
-            disabled={reprocess.isPending}
+            disabled={reprocess.isPending || d.status === "queued" || d.status === "processing"}
             onClick={() =>
               reprocess.mutate(d.doc_id, {
                 onSuccess: (res) => {
-                  const item = res.items[0];
-                  if (item?.status === "processed") toast.success(`Re-indexed ${item.chunk_count} passages`);
-                  else toast.error(item?.detail ?? "Processing failed");
+                  if (res.items[0]?.status === "failed") toast.error(res.items[0].detail ?? "Processing failed");
+                  else toast.message("Processing in the background", { description: "The status updates here when it finishes." });
                 },
                 onError: (e) => toast.error(describeError(e).title),
               })
@@ -120,7 +119,7 @@ export function DocumentDetailPage() {
         </div>
       </motion.div>
 
-      <div className="grid gap-6 lg:grid-cols-[20rem_1fr]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
         <motion.aside variants={fadeUp} className="space-y-4 lg:sticky lg:top-24 lg:self-start">
           <div className="glass rounded-2xl p-5">
             <dl className="grid grid-cols-2 gap-4">

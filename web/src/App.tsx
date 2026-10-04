@@ -7,14 +7,7 @@ import { PreferencesProvider } from "@/components/layout/PreferencesProvider";
 import { ChatProvider } from "@/components/qa/ChatProvider";
 import { TooltipProvider } from "@/components/ui/overlays";
 import { ApiError } from "@/lib/errors";
-import { AboutPage } from "@/pages/AboutPage";
-import { AskPage } from "@/pages/AskPage";
-import { DocumentDetailPage } from "@/pages/DocumentDetailPage";
-import { DocumentsPage } from "@/pages/DocumentsPage";
 import { HomePage } from "@/pages/HomePage";
-import { NotFoundPage } from "@/pages/NotFoundPage";
-import { SearchPage } from "@/pages/SearchPage";
-import { SettingsPage } from "@/pages/SettingsPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -27,18 +20,29 @@ const queryClient = new QueryClient({
   },
 });
 
+/** Shown only while the first, code-split page of a deep link loads. */
+function RouteFallback() {
+  return (
+    <div role="status" aria-label="Loading" className="flex min-h-dvh items-center justify-center">
+      <span className="size-2 animate-pulse-soft rounded-full bg-accent" />
+    </div>
+  );
+}
+
 const router = createBrowserRouter([
   {
     element: <AppShell />,
+    HydrateFallback: RouteFallback,
     children: [
       { index: true, element: <HomePage /> },
-      { path: "documents", element: <DocumentsPage /> },
-      { path: "documents/:id", element: <DocumentDetailPage /> },
-      { path: "search", element: <SearchPage /> },
-      { path: "ask", element: <AskPage /> },
-      { path: "settings", element: <SettingsPage /> },
-      { path: "about", element: <AboutPage /> },
-      { path: "*", element: <NotFoundPage /> },
+      // Other pages are code-split: each loads on first visit (a few kB each).
+      { path: "documents", lazy: async () => ({ Component: (await import("@/pages/DocumentsPage")).DocumentsPage }) },
+      { path: "documents/:id", lazy: async () => ({ Component: (await import("@/pages/DocumentDetailPage")).DocumentDetailPage }) },
+      { path: "search", lazy: async () => ({ Component: (await import("@/pages/SearchPage")).SearchPage }) },
+      { path: "ask", lazy: async () => ({ Component: (await import("@/pages/AskPage")).AskPage }) },
+      { path: "settings", lazy: async () => ({ Component: (await import("@/pages/SettingsPage")).SettingsPage }) },
+      { path: "about", lazy: async () => ({ Component: (await import("@/pages/AboutPage")).AboutPage }) },
+      { path: "*", lazy: async () => ({ Component: (await import("@/pages/NotFoundPage")).NotFoundPage }) },
     ],
   },
 ]);

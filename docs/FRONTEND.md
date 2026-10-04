@@ -32,7 +32,7 @@ web/src/
 │   ├── api.ts              typed API client (fetch; XHR for upload progress)
 │   ├── errors.ts           ApiError + friendly messages (5xx details never shown)
 │   ├── markdown.ts         safe Markdown subset + citation parsing
-│   ├── citations.ts        abstention rule (mirrors the backend)
+│   ├── citations.ts        not-found sentence + abstention rule (mirrors the backend; badges use the server's `grounding`)
 │   ├── queries.ts          TanStack Query hooks
 │   ├── preferences.ts      theme, motion, access token (browser storage)
 │   ├── events.ts           tiny signals: auth-required, scene-pulse
@@ -61,11 +61,11 @@ Business logic (API calls, parsing, error mapping) lives in `lib/`; components r
 
 | Route | What it shows |
 |---|---|
-| `/` | Hero with the 3D scene, upload panel, recent documents, "How it works" pipeline |
+| `/` | Hero with the 3D scene and live workspace stats from `/api/health` (documents, indexed passages, Q&A enabled or search only), upload panel, recent documents, "How it works" pipeline |
 | `/documents` | Library with name/category filter and status filter; upload panel; empty state |
 | `/documents/:id` | Metadata, warnings, classification scores, indexed passages grouped by page; `?page=n` scrolls to and highlights a page (citation deep links) |
 | `/search` | Semantic search (Ctrl/⌘ K), document filter, top-k, ranked results with similarity bars |
-| `/ask` | Conversation with interactive citations and a sources panel; honest "unavailable" state without an LLM |
+| `/ask` | Conversation with interactive citations and a sources panel; a badge per answer from the server's `grounding` ("Grounded · N sources cited", "Not found in your documents", "Could not be verified"); an unverified model reply appears only in a collapsed "Show unverified reply" disclosure, as plain text; honest "unavailable" state without an LLM |
 | `/settings` | Model, retrieval & indexing (live chunk diagram), Evaluation lab, classification labels, limits, browser preferences |
 | `/about` | Architecture, components, what DocMind does not claim |
 
@@ -73,8 +73,12 @@ Business logic (API calls, parsing, error mapping) lives in `lib/`; components r
 
 - Every request goes to the same origin under `/api`. If a token is stored, `X-API-Key` is added (`lib/api.ts`).
 - A `401` emits `auth-required`, which opens the token dialog. If `/api/health` says `auth_required` and no token is stored, the dialog opens immediately.
-- Upload uses `XMLHttpRequest` to report **real** byte progress. Processing is a single request without progress, so the pipeline view shows the remaining stages as one indeterminate step rather than inventing percentages.
-- TanStack Query caches `health` (refreshed every 20 s), `documents`, document details, chunks and settings; mutations invalidate what they affect.
+- Upload uses `XMLHttpRequest` to report **real** byte progress. Processing then runs in the background on the server (`POST /api/documents/process` with `"background": true`, answered with `202`). Each upload result follows the document's live status: *Queued for processing…*, *Extracting, embedding and indexing…*, *Indexed N chunks*, or the error. There is no per-stage progress from the server, so the processing stages are shown as one indeterminate step rather than invented percentages.
+- TanStack Query caches `health` (refreshed every 20 s), `documents`, document details, chunks and settings; mutations invalidate what they affect. The document list is polled every 1.5 s, but only while a document is `queued` or `processing`.
+
+## Code splitting
+
+Every route except Home is loaded on demand with React Router's `lazy`. The main chunk is 92 KB gzipped (229 KB before splitting). The home page still loads shared chunks, about 211 KB gzipped on first load. The 3D hero chunk (about 243 KB gzipped) is loaded only on the home page, and only on desktop widths (≥ 768 px) with motion allowed and WebGL available.
 
 ## Untrusted content
 
@@ -85,7 +89,7 @@ Document text and LLM answers are always rendered as React text. Answers use `li
 `KnowledgeScene` shows a stack of document sheets (the corpus) inside a shell of connected semantic nodes (the embedding space), with retrieval beams that brighten on uploads, searches and answers.
 - **Lightweight:** one canvas, shared geometries and materials, an instanced mesh for nodes, single draw calls for links and particles, no post-processing.
 - **No re-renders:** animation runs in `useFrame` without React state, and the loop is paused when the hero is off-screen or the tab is hidden.
-- **Lazy-loaded:** three.js loads only on the home page.
+- **Lazy-loaded:** three.js loads only on the home page, and only when the 3D scene will actually be shown.
 - **Fallbacks:** `HeroVisual` uses the static CSS `SceneFallback` instead when WebGL is unavailable, reduced motion is on, or the viewport is narrower than 768 px.
 
 ## Accessibility
@@ -94,6 +98,7 @@ Document text and LLM answers are always rendered as React text. Answers use `li
 - **Controls:** labelled controls, `aria-live` for streaming states, and Radix primitives for dialogs, popovers and tooltips (focus management, Escape to close).
 - **Keyboard:** citation chips open on focus, and the upload zone has a "Browse files" button for keyboard users.
 - **Reduced motion:** the OS setting or the in-app setting disables decorative animation and the 3D scene. CSS transitions become instant and Motion is configured with `reducedMotion="always"`.
+- **Small screens:** single-column grids use `grid-cols-1` (`minmax(0, 1fr)`), so long filenames no longer make cards wider than a 375 px screen.
 
 ## Commands
 
@@ -102,6 +107,6 @@ cd web
 npm install
 npm run dev         # http://localhost:5173, proxies /api to DOCMIND_API_URL (default http://127.0.0.1:8000)
 npm run typecheck
-npm test            # 34 tests
+npm test            # 40 tests
 npm run build       # web/dist (served by the API)
 ```

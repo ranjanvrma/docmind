@@ -1,4 +1,4 @@
-import { AlertTriangle, CircleSlash, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, ChevronDown, CircleSlash, ShieldCheck, Sparkles } from "lucide-react";
 import { motion } from "motion/react";
 import { useState } from "react";
 
@@ -6,29 +6,51 @@ import { fadeUp } from "@/components/animations/motion";
 import { SourcesPanel } from "@/components/sources/SourcesPanel";
 import { ErrorState } from "@/components/ui/feedback";
 import { Badge } from "@/components/ui/primitives";
-import { isAbstention } from "@/lib/citations";
 import { AnswerContent } from "./AnswerContent";
+import type { AskResponse } from "@/lib/types";
 import type { ChatTurn } from "./ChatProvider";
 import { useChat } from "./ChatProvider";
 
-function AnswerStatus({ turn }: { turn: ChatTurn }) {
-  const r = turn.response!;
-  if (isAbstention(r.answer))
+/** The server decides grounding; the badge only reports it. */
+export function AnswerStatus({ response: r }: { response: AskResponse }) {
+  if (r.grounding === "not_found")
     return (
       <Badge tone="warning">
         <CircleSlash className="size-3" /> Not found in your documents
       </Badge>
     );
-  if (r.answered_from_documents)
+  if (r.grounding === "grounded") {
+    const cited = r.sources.filter((s) => s.cited).length;
     return (
       <Badge tone="success">
-        <ShieldCheck className="size-3" /> Grounded in cited sources
+        <ShieldCheck className="size-3" /> Grounded · {cited} {cited === 1 ? "source" : "sources"} cited
       </Badge>
     );
+  }
   return (
-    <Badge tone="warning">
-      <AlertTriangle className="size-3" /> No valid citations
+    <Badge tone="danger">
+      <AlertTriangle className="size-3" /> Could not be verified
     </Badge>
+  );
+}
+
+export function UnverifiedOutput({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-4 rounded-xl border border-line bg-surface/60">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs text-fg-muted hover:text-fg"
+      >
+        The model replied without citing any source, so its reply is not shown as an answer.
+        <span className="flex shrink-0 items-center gap-1 font-medium">
+          {open ? "Hide" : "Show"} unverified reply <ChevronDown className={`size-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+        </span>
+      </button>
+      {open && <p className="whitespace-pre-line border-t border-line px-3 py-2 text-xs text-fg-muted">{text}</p>}
+    </div>
   );
 }
 
@@ -64,7 +86,7 @@ export function ChatTurnView({ turn }: { turn: ChatTurn }) {
             <Sparkles className="size-3.5" />
           </span>
           <span className="text-xs font-medium text-fg-muted">DocMind</span>
-          {turn.status === "done" && <AnswerStatus turn={turn} />}
+          {turn.status === "done" && turn.response && <AnswerStatus response={turn.response} />}
           {turn.docIds.length > 0 && <Badge>{turn.docIds.length === 1 ? "1 document" : `${turn.docIds.length} documents`}</Badge>}
         </div>
 
@@ -87,6 +109,9 @@ export function ChatTurnView({ turn }: { turn: ChatTurn }) {
         {turn.status === "done" && turn.response && (
           <>
             <AnswerContent answer={turn.response.answer} sources={turn.response.sources} onReveal={reveal} />
+            {turn.response.grounding === "ungrounded" && turn.response.unverified_answer && (
+              <UnverifiedOutput text={turn.response.unverified_answer} />
+            )}
             {turn.response.invalid_citations.length > 0 && (
               <p className="mt-4 flex items-start gap-2 rounded-xl border border-danger/25 bg-danger/5 px-3 py-2 text-xs text-danger">
                 <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />

@@ -11,7 +11,7 @@ Design choices
   ``chunk_overlap`` characters), so a fact that straddles two chunks still
   appears intact in at least one of them.
 * Sizes are measured in characters: simple, tokenizer-independent, and easy to
-  reason about. ~800 characters is roughly 150-200 English tokens, which is
+  reason about. The default 600 characters is roughly 110-150 English tokens, which is
   comfortably below the 256-token limit of MiniLM-style embedding models.
 """
 
@@ -58,7 +58,7 @@ def _joined_length(units: list[str]) -> int:
     return sum(len(u) for u in units) + max(len(units) - 1, 0)
 
 
-def chunk_text(text: str, chunk_size: int = 800, chunk_overlap: int = 150) -> list[str]:
+def chunk_text(text: str, chunk_size: int = 600, chunk_overlap: int = 150) -> list[str]:
     """Split text into chunks of at most ``chunk_size`` characters."""
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
@@ -92,7 +92,7 @@ def make_chunk_id(doc_id: str, page_number: int, chunk_index: int) -> str:
     return f"{doc_id}:p{page_number}:c{chunk_index}"
 
 
-def chunk_pages(pages: list[PageText], chunk_size: int = 800, chunk_overlap: int = 150) -> list[Chunk]:
+def chunk_pages(pages: list[PageText], chunk_size: int = 600, chunk_overlap: int = 150) -> list[Chunk]:
     """Chunk every page and attach citation metadata to each chunk."""
     chunks: list[Chunk] = []
     for page in pages:

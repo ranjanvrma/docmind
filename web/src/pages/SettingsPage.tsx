@@ -33,6 +33,7 @@ const SECTIONS = [
 
 const ANTHROPIC_MODELS = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"];
 const BASE_URL_PRESETS = [
+  { label: "OpenRouter", value: "https://openrouter.ai/api/v1" },
   { label: "OpenAI", value: "https://api.openai.com/v1" },
   { label: "Groq", value: "https://api.groq.com/openai/v1" },
   { label: "Ollama (local)", value: "http://localhost:11434/v1" },
@@ -99,11 +100,13 @@ export function SettingsPage() {
   });
 
   const reindex = useMutation({
-    mutationFn: () => api.process(undefined, true),
+    mutationFn: () => api.process(undefined, true, true),
     onSuccess: (res) => {
       setNeedsReindex(false);
       client.invalidateQueries();
-      toast.success(`Re-indexed: ${res.indexed_chunks} chunks`);
+      toast.message(`Re-indexing ${pluralize(res.items.filter((i) => !i.skipped).length, "document")} in the background`, {
+        description: "Progress is shown on the Documents page.",
+      });
     },
     onError: (e) => toast.error(describeError(e).title),
   });
@@ -143,7 +146,7 @@ export function SettingsPage() {
           <Skeleton className="h-64 w-full rounded-2xl" />
         </div>
       ) : (
-        <div className="grid gap-8 lg:grid-cols-[12rem_1fr]">
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[12rem_minmax(0,1fr)]">
           <nav aria-label="Settings sections" className="hidden lg:block">
             <ul className="sticky top-28 space-y-1">
               {SECTIONS.map(({ id, label, icon: Icon }) => (
@@ -243,12 +246,15 @@ export function SettingsPage() {
                   format={(v) => `≈${Math.round(v / 4).toLocaleString()} tok`}
                 />
               </Field>
-              <Field label="Chunk size" modified={isDirty("chunk_size")} hint="Characters per chunk. Smaller = more precise matches; larger = more context per match.">
+              <Field label="Relevance floor" modified={isDirty("min_relevance")} hint="Passages less similar than this to the question are not sent to the LLM. If none pass, DocMind abstains without calling it. Search results are not filtered.">
+                <SliderField label="Relevance floor" value={draft.min_relevance} min={0} max={0.5} step={0.01} onChange={(v) => set("min_relevance", v)} format={(v) => v.toFixed(2)} />
+              </Field>
+              <Field label="Chunk size" modified={isDirty("chunk_size")} hint="Characters per chunk. Smaller = more precise matches; larger = more context per match. Capped at 1200: the embedding model reads about 256 tokens.">
                 <SliderField
                   label="Chunk size"
                   value={draft.chunk_size}
                   min={200}
-                  max={2000}
+                  max={1200}
                   step={50}
                   onChange={(v) => {
                     set("chunk_size", v);

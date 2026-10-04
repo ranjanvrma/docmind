@@ -27,7 +27,7 @@ def setup_logging(level: str = "INFO") -> None:
         logging.basicConfig(level=level, format=_LOG_FORMAT)
     root.setLevel(level)
     # Third-party libraries are chatty at INFO; keep them quieter.
-    for noisy in ("httpx", "httpcore", "urllib3", "sentence_transformers", "filelock"):
+    for noisy in ("httpx", "httpcore", "urllib3", "huggingface_hub", "filelock"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

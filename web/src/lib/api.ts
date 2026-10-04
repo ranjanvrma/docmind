@@ -70,10 +70,11 @@ export const api = {
   document: (id: string) => request<DocumentInfo>(`/documents/${encodeURIComponent(id)}`),
   chunks: (id: string) => request<DocumentChunk[]>(`/documents/${encodeURIComponent(id)}/chunks`),
   deleteDocument: (id: string) => request<void>(`/documents/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  process: (docIds?: string[], force = false) =>
+  /** With background=true the server answers 202 at once; poll documents for status. */
+  process: (docIds?: string[], force = false, background = false) =>
     request<ProcessResponse>("/documents/process", {
       method: "POST",
-      body: JSON.stringify({ doc_ids: docIds ?? null, force }),
+      body: JSON.stringify({ doc_ids: docIds ?? null, force, background }),
     }),
   search: (query: string, topK: number, docIds?: string[]) =>
     request<SearchResponse>("/search", {

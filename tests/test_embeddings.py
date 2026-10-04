@@ -1,7 +1,7 @@
 """Embedding tests.
 
 The first group uses a fake encoder to test the Embedder wrapper itself. The
-second group loads the real sentence-transformer model (downloaded on first
+second group loads the real model through ONNX Runtime (downloaded on first
 use) and is skipped automatically if the model cannot be loaded, e.g. offline.
 """
 
@@ -72,3 +72,36 @@ def test_real_model_captures_semantic_similarity(real_embedder):
         ]
     )
     assert float(query @ paraphrase) > float(query @ unrelated)
+
+
+def test_batching_preserves_input_order(real_embedder):
+    # Texts are length-sorted into batches internally; results must come back in input order.
+    texts = ["a much longer sentence about solar panels and batteries " * 5, "short", "medium length text here"]
+    together = Embedder(real_embedder.model_name, batch_size=2).embed(texts)
+    one_by_one = np.vstack([real_embedder.embed([t]) for t in texts])
+    np.testing.assert_allclose(together, one_by_one, atol=1e-5)
+
+
+def test_long_text_is_truncated_not_rejected(real_embedder):
+    vectors = real_embedder.embed(["word " * 2000])
+    assert vectors.shape == (1, real_embedder.dimension)
+
+
+def test_onnx_matches_sentence_transformers_reference(real_embedder):
+    # The ONNX pipeline must reproduce SentenceTransformer.encode, otherwise
+    # indexes built by either implementation would not be interchangeable.
+    st = pytest.importorskip("sentence_transformers")
+    texts = ["Customers may request a refund within 30 days.", "Ünïcödé — 日本語のテキスト", "x " * 600]
+    reference = st.SentenceTransformer(real_embedder.model_name, device="cpu").encode(texts, normalize_embeddings=True)
+    np.testing.assert_allclose(real_embedder.embed(texts), reference, atol=1e-4)
+
+
+def test_unknown_model_gives_a_clear_error(monkeypatch):
+    from app import embeddings
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("not in cache")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", missing)
+    with pytest.raises(embeddings.EmbeddingModelError, match="ONNX export"):
+        embeddings.OnnxSentenceEncoder("someone/model-without-onnx")
