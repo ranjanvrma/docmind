@@ -1,29 +1,25 @@
-# API + UI as two containers from the same image. Data persists in ./data on the host.
+# DocMind as a single container: the API serves the web UI on the same port.
+#
+#   cp .env.example .env    # then set DOCMIND_API_TOKEN (required: the image runs with
+#                           # APP_ENV=production) and optionally LLM_API_KEY
+#   docker compose up --build -d
+#   open http://127.0.0.1:8000
+#
+# Data (uploads, index, registry, settings saved from the UI) persists in ./data.
+# The port is bound to 127.0.0.1. To serve other machines, put a reverse proxy
+# with TLS in front (see docs/DEPLOYMENT.md) rather than exposing it directly.
 services:
-  api:
+  docmind:
     build: .
     image: docmind:latest
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATA_DIR: /app/data
     volumes:
       - ./data:/app/data
     ports:
-      - "8000:8000"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
-  ui:
-    image: docmind:latest
-    depends_on:
-      api:
-        condition: service_healthy
-    environment:
-      DOCMIND_API_URL: http://api:8000
-    command: ["streamlit", "run", "frontend/streamlit_app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
-    ports:
-      - "8501:8501"
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+    # The health check is defined in the Dockerfile (GET /api/health).

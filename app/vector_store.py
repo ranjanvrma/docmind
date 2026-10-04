@@ -28,7 +28,7 @@ import faiss
 import numpy as np
 
 from app.models import Chunk
-from app.utils import atomic_write_bytes, atomic_write_json, read_json
+from app.utils import StorageError, atomic_write_bytes, atomic_write_json, read_json
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ METADATA_FILE = "metadata.json"
 MANIFEST_FILE = "manifest.json"
 
 
-class VectorStoreError(Exception):
+class VectorStoreError(StorageError):
     pass
 
 
@@ -62,6 +62,12 @@ class FaissVectorStore:
 
     def has_document(self, doc_id: str) -> bool:
         return doc_id in self.document_ids()
+
+    def chunks_for_document(self, doc_id: str) -> list[Chunk]:
+        """All indexed chunks of one document, in page/chunk order."""
+        with self._lock:
+            chunks = [Chunk.from_dict(meta) for meta in self._metadata.values() if meta["doc_id"] == doc_id]
+        return sorted(chunks, key=lambda c: (c.page_number, c.chunk_index))
 
     # ------------------------------------------------------------- mutation
     def add(self, chunks: list[Chunk], embeddings: np.ndarray) -> None:
@@ -150,30 +156,64 @@ class FaissVectorStore:
 
     @classmethod
     def load_or_create(cls, index_dir: Path, dimension: int, embedding_model: str) -> "FaissVectorStore":
-        manifest = read_json(index_dir / MANIFEST_FILE)
+        """Load the persisted index, or create an empty one if none exists.
+
+        Every way the files can be missing, unreadable or inconsistent raises
+        ``VectorStoreError`` with recovery instructions, never a raw exception.
+        """
+        recovery = (
+            f"Delete the index directory ({index_dir}) and restart DocMind; previously processed "
+            "documents will then be marked for re-processing."
+        )
+        try:
+            manifest = read_json(index_dir / MANIFEST_FILE)
+        except (OSError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
+            raise VectorStoreError(f"The index manifest in {index_dir} is unreadable ({exc}). {recovery}") from exc
         if manifest is None:
+            if (index_dir / INDEX_FILE).exists():
+                raise VectorStoreError(f"{MANIFEST_FILE} is missing from {index_dir}. {recovery}")
             logger.info("No existing index at %s; creating a new one", index_dir)
             return cls(dimension, embedding_model, index_dir)
 
-        if manifest["embedding_model"] != embedding_model or manifest["dimension"] != dimension:
+        try:
+            built_with, built_dim = manifest["embedding_model"], int(manifest["dimension"])
+            next_id, expected_size = int(manifest["next_id"]), int(manifest["size"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise VectorStoreError(f"The index manifest in {index_dir} is malformed. {recovery}") from exc
+
+        if built_with != embedding_model or built_dim != dimension:
             raise VectorStoreError(
-                f"The index in {index_dir} was built with '{manifest['embedding_model']}' "
-                f"(dim {manifest['dimension']}) but the configured model is '{embedding_model}' "
+                f"The index in {index_dir} was built with '{built_with}' "
+                f"(dim {built_dim}) but the configured model is '{embedding_model}' "
                 f"(dim {dimension}). Delete the index directory and re-process your documents, "
                 "or set EMBEDDING_MODEL back to the original model."
             )
 
         store = cls(dimension, embedding_model, index_dir)
-        raw = np.frombuffer((index_dir / INDEX_FILE).read_bytes(), dtype=np.uint8)
-        store._index = faiss.deserialize_index(raw)
-        store._metadata = {int(k): v for k, v in (read_json(index_dir / METADATA_FILE) or {}).items()}
-        store._next_id = int(manifest["next_id"])
+        index_path = index_dir / INDEX_FILE
+        if not index_path.exists():
+            raise VectorStoreError(f"{INDEX_FILE} is missing from {index_dir}. {recovery}")
+        try:
+            raw = np.frombuffer(index_path.read_bytes(), dtype=np.uint8)
+            store._index = faiss.deserialize_index(raw)
+        except Exception as exc:  # FAISS raises RuntimeError for corrupt data
+            raise VectorStoreError(f"{INDEX_FILE} in {index_dir} is corrupt ({exc.__class__.__name__}). {recovery}") from exc
+        try:
+            metadata = read_json(index_dir / METADATA_FILE) or {}
+            store._metadata = {int(k): v for k, v in metadata.items()}
+        except (OSError, ValueError, AttributeError) as exc:
+            raise VectorStoreError(f"{METADATA_FILE} in {index_dir} is unreadable. {recovery}") from exc
+        store._next_id = next_id
 
-        if store.size != len(store._metadata) or store.size != manifest["size"]:
+        required = set(Chunk.__dataclass_fields__)
+        if store._index.d != dimension or not all(
+            isinstance(meta, dict) and required <= meta.keys() for meta in store._metadata.values()
+        ):
+            raise VectorStoreError(f"The index files in {index_dir} are inconsistent or damaged. {recovery}")
+        if store.size != len(store._metadata) or store.size != expected_size:
             raise VectorStoreError(
                 f"Index/metadata mismatch in {index_dir}: index has {store.size} vectors, "
-                f"metadata has {len(store._metadata)} entries, manifest expects {manifest['size']}. "
-                "Delete the index directory and re-process your documents."
+                f"metadata has {len(store._metadata)} entries, manifest expects {expected_size}. {recovery}"
             )
         logger.info("Loaded vector store with %d vectors from %s", store.size, index_dir)
         return store

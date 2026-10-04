@@ -1,12 +1,35 @@
+# Secrets and local environments
 .env
+.env.*
+*.pem
+*.key
+*.log
 .venv
 venv
+.claude
+
+# VCS, caches, tooling
 .git
 **/__pycache__
 .pytest_cache
+.ipynb_checkpoints
+
+# Node: dependencies and output are produced inside the build
+web/node_modules
+web/dist
+
+# User data (mounted as a volume at runtime instead)
 data/raw/*
 data/processed/*
 data/index/*
+data/settings.json
 data/classifier/*.joblib
+data/classifier/*.report.json
 evaluation/results/*
+
+# Not needed in the image
+docs
+tests
 notebooks
+*.md
+!data/classifier/README.md

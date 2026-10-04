@@ -18,14 +18,15 @@ from app.classifier import DocumentClassifier, document_embedding
 from app.config import Settings
 from app.embeddings import Embedder
 from app.ingestion import IngestionError, compute_document_id, extract_pages, validate_pdf_upload
-from app.llm import LLMClient, create_llm_client
-from app.models import DocumentRecord, SearchResult
+from app import runtime_settings
+from app.llm import LLMClient, LLMError, create_llm_client
+from app.models import Chunk, DocumentRecord, SearchResult
 from app.preprocessing import preprocess_pages
 from app.qa import QAResult, answer_question
 from app.registry import DocumentRegistry
 from app.retrieval import Retriever
-from app.utils import atomic_write_bytes, sanitize_filename
-from app.vector_store import FaissVectorStore
+from app.utils import StorageError, atomic_write_bytes, sanitize_filename
+from app.vector_store import FaissVectorStore, VectorStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -40,18 +41,29 @@ def _now() -> str:
 
 class DocMindService:
     def __init__(self, settings: Settings, embedder: Embedder | None = None, llm: LLMClient | None = None):
+        try:
+            settings.ensure_dirs()
+        except OSError as exc:
+            raise StorageError(
+                f"DATA_DIR {settings.data_dir} is not writable ({exc.strerror or exc}). "
+                "Mount a volume the app user (UID 1000 in Docker) can write to."
+            ) from exc
+        # Environment values, then any overrides saved from the Settings page.
+        self._env_settings = settings
+        settings, self._overrides = runtime_settings.load_overrides(settings)
         self.settings = settings
-        settings.ensure_dirs()
         self.embedder = embedder or Embedder(settings.embedding_model, settings.embedding_batch_size)
         self.store = FaissVectorStore.load_or_create(
             settings.index_dir, self.embedder.dimension, self.embedder.model_name
         )
         self.registry = DocumentRegistry(settings.processed_dir / "documents.json")
+        self._reconcile_registry_with_index()
         self.retriever = Retriever(self.embedder, self.store)
         self.classifier = DocumentClassifier(
             self.embedder, settings.classifier_labels, settings.classifier_model_path
         )
         self._llm = llm
+        self._llm_injected = llm is not None  # tests inject a fake LLM; keep it across setting changes
         # Serialises index mutations (process/delete). Searches only take the
         # vector store's own read lock.
         self._write_lock = threading.Lock()
@@ -66,6 +78,58 @@ class DocMindService:
     @property
     def llm_available(self) -> bool:
         return self._llm is not None or self.settings.llm_configured
+
+    def test_llm(self) -> dict:
+        """Make one tiny real request to the configured LLM and report the outcome."""
+        start = time.perf_counter()
+        try:
+            reply = self.llm.generate("You are a connectivity check. Follow the instruction exactly.", "Reply with the single word: OK")
+        except LLMError as exc:  # includes LLMNotConfiguredError; messages contain no provider bodies
+            return {"ok": False, "message": str(exc), "latency_ms": None, "model": self.settings.llm_model}
+        latency = round((time.perf_counter() - start) * 1000)
+        logger.info("LLM connection test succeeded in %d ms (model=%s)", latency, self.settings.llm_model)
+        return {"ok": True, "message": f"Model replied: {reply.strip()[:40]}", "latency_ms": latency, "model": self.settings.llm_model}
+
+    # ------------------------------------------------------------- settings
+    def settings_view(self) -> dict:
+        view = runtime_settings.public_view(self.settings, self._overrides, self._env_settings)
+        view["read_only"]["embedding_model"] = self.embedder.model_name  # the model actually loaded
+        return view
+
+    def update_settings(self, changes: dict) -> dict:
+        """Validate, persist and apply setting changes. Raises ValueError if invalid."""
+        with self._write_lock:
+            _, coerced = runtime_settings.apply_changes(self.settings, changes)  # validates; raises ValueError
+            overrides = {**self._overrides, **coerced}
+            updated = runtime_settings.resolve(self._env_settings, overrides)
+            runtime_settings.save_overrides(self.settings, overrides)
+            self._apply_settings(updated, overrides, changed=set(coerced))
+        logger.info("Settings updated: %s", ", ".join(sorted(coerced)))  # names only, never values
+        return self.settings_view()
+
+    def remove_overrides(self, names: set[str]) -> dict:
+        """Drop saved overrides (e.g. the stored API key) so the environment value applies again."""
+        with self._write_lock:
+            remaining = {k: v for k, v in self._overrides.items() if k not in names}
+            updated = runtime_settings.resolve(self._env_settings, remaining)
+            runtime_settings.save_overrides(self.settings, remaining)
+            self._apply_settings(updated, remaining, changed=names & set(self._overrides))
+        return self.settings_view()
+
+    def reset_settings(self) -> dict:
+        with self._write_lock:
+            runtime_settings.overrides_path(self.settings).unlink(missing_ok=True)
+            changed = set(self._overrides)
+            self._apply_settings(self._env_settings, {}, changed=changed)
+        logger.info("Settings reset to environment defaults")
+        return self.settings_view()
+
+    def _apply_settings(self, settings: Settings, overrides: dict, changed: set[str]) -> None:
+        self.settings, self._overrides = settings, overrides
+        if changed & runtime_settings.LLM_FIELDS and not self._llm_injected:
+            self._llm = None  # recreated lazily with the new provider/model/key
+        if "classifier_labels" in changed:
+            self.classifier = DocumentClassifier(self.embedder, settings.classifier_labels, settings.classifier_model_path)
 
     # -------------------------------------------------------------- uploads
     def _raw_path(self, doc_id: str):
@@ -113,17 +177,67 @@ class DocMindService:
         results: list[tuple[DocumentRecord, bool]] = []
         with self._write_lock:
             changed = False
+            succeeded: list[DocumentRecord] = []
             for record in targets:
                 if record.status == "processed" and not force and self.store.has_document(record.doc_id):
                     results.append((record, True))
                     continue
-                results.append((self._process_one(record), False))
+                # Work on a copy so the registry never shows "processed" before the index is saved.
+                processed = self._process_one(DocumentRecord.from_dict(record.to_dict()))
+                if processed.status == "processed":
+                    succeeded.append(processed)
+                results.append((processed, False))
                 changed = True
             if changed:
-                self.store.save()
+                self._save_index_then_commit(succeeded)
         return results
 
+    def _save_index_then_commit(self, succeeded: list[DocumentRecord]) -> None:
+        """Persist the index first; only then mark documents as processed.
+
+        If saving fails, the new vectors are rolled back and the documents are
+        marked failed, so the registry never claims a document is indexed when
+        its vectors are not on disk.
+        """
+        try:
+            self.store.save()
+        except Exception as exc:
+            logger.exception("Saving the vector index failed; rolling back %d document(s)", len(succeeded))
+            for record in succeeded:
+                self.store.remove_document(record.doc_id)
+                record.status, record.chunk_count, record.classification = "failed", 0, None
+                record.error = "The search index could not be saved, so this document was not indexed. Process it again."
+                self.registry.upsert(record)
+            raise VectorStoreError(f"Failed to save the search index: {exc}") from exc
+        for record in succeeded:
+            self.registry.upsert(record)
+
+    def _reconcile_registry_with_index(self) -> None:
+        """Make the index contain exactly the documents the registry marks as processed.
+
+        Repairs the state left by a crash or a deleted index directory:
+        vectors of documents that are not "processed" are dropped, and
+        "processed" documents without vectors go back to "uploaded" so that
+        "process pending documents" indexes them again.
+        """
+        processed = {r.doc_id for r in self.registry.all() if r.status == "processed"}
+        indexed = self.store.document_ids()
+        for doc_id in indexed - processed:
+            self.store.remove_document(doc_id)
+            logger.warning("Dropped index entries for doc_id=%s (not marked processed in the registry)", doc_id)
+        for doc_id in processed - indexed:
+            record = DocumentRecord.from_dict(self.registry.get(doc_id).to_dict())
+            record.status, record.chunk_count, record.processed_at = "uploaded", 0, None
+            record.warnings = record.warnings + ["Index entries were missing; the document needs to be processed again."]
+            self.registry.upsert(record)
+            logger.warning("doc_id=%s was marked processed but has no index entries; marked for re-processing", doc_id)
+
     def _process_one(self, record: DocumentRecord) -> DocumentRecord:
+        """Process one document into the in-memory index.
+
+        Failures are written to the registry immediately. Successes are
+        returned un-persisted; the caller commits them after saving the index.
+        """
         start = time.perf_counter()
         # Remove stale vectors first so re-processing never duplicates chunks.
         self.store.remove_document(record.doc_id)
@@ -131,7 +245,11 @@ class DocMindService:
         try:
             data = self._raw_path(record.doc_id).read_bytes()
             extraction = extract_pages(
-                data, record.filename, record.doc_id, min_chars_per_page=self.settings.min_chars_per_page
+                data,
+                record.filename,
+                record.doc_id,
+                min_chars_per_page=self.settings.min_chars_per_page,
+                max_pages=self.settings.max_pages,
             )
             record.page_count = extraction.page_count
             record.empty_pages = extraction.empty_pages
@@ -175,7 +293,8 @@ class DocMindService:
             record.status, record.chunk_count = "failed", 0
             record.error = f"Unexpected error while processing: {exc.__class__.__name__}"
             logger.exception("Unexpected failure processing doc_id=%s", record.doc_id)
-        self.registry.upsert(record)
+        if record.status != "processed":
+            self.registry.upsert(record)
         return record
 
     # ------------------------------------------------------------ documents
@@ -187,6 +306,10 @@ class DocMindService:
         if record is None:
             raise DocumentNotFoundError(doc_id)
         return record
+
+    def get_document_chunks(self, doc_id: str) -> list[Chunk]:
+        self.get_document(doc_id)  # raises DocumentNotFoundError
+        return self.store.chunks_for_document(doc_id)
 
     def delete_document(self, doc_id: str) -> None:
         with self._write_lock:

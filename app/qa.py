@@ -22,8 +22,11 @@ from app.retrieval import Retriever
 
 logger = logging.getLogger(__name__)
 
-# Matches [1], [2, 3], [Source 4] and similar.
-_CITATION_GROUP = re.compile(r"\[(?:source\s*)?(\d+(?:\s*,\s*(?:source\s*)?\d+)*)\]", re.IGNORECASE)
+# Matches [1], [2, 3], [Source 4] and similar. Source numbers have at most two
+# digits because a prompt never holds more than max_top_k (20) sources, so
+# bracketed years or values such as "[2024]" are ordinary text, not citations.
+# An out-of-range marker like "[9]" with 5 sources still counts as an (invalid) citation.
+_CITATION_GROUP = re.compile(r"\[(?:source\s*)?(\d{1,2}(?:\s*,\s*(?:source\s*)?\d{1,2})*)\]", re.IGNORECASE)
 
 
 @dataclass
@@ -45,7 +48,12 @@ def extract_citations(answer: str) -> list[int]:
 
 
 def is_abstention(answer: str) -> bool:
-    return NOT_FOUND_ANSWER.lower().rstrip(".") in answer.lower()
+    """True if the answer *starts* with the not-found sentence, as the prompt instructs.
+
+    Checking only the start means a partial answer that mentions the sentence
+    later ("X is 5 [1]. I could not find … for Y") still counts as grounded.
+    """
+    return answer.strip().lstrip("\"'*").lower().startswith(NOT_FOUND_ANSWER.lower().rstrip("."))
 
 
 def answer_question(

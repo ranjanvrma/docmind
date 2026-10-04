@@ -106,11 +106,16 @@ def _relevant_keys(item: dict) -> set[tuple[str, int]]:
     return {(r["document"], int(r["page"])) for r in item.get("relevant", [])}
 
 
-def build_eval_service(dataset: dict, workdir: Path):
+class EvaluationError(RuntimeError):
+    pass
+
+
+def build_eval_service(dataset: dict, workdir: Path, settings=None, embedder=None):
+    """Index the dataset's PDFs into a throwaway data dir using ``settings`` (default: .env)."""
     from app.service import DocMindService
 
-    settings = dataclasses.replace(get_settings(), data_dir=workdir)
-    service = DocMindService(settings)
+    settings = dataclasses.replace(settings or get_settings(), data_dir=workdir)
+    service = DocMindService(settings, embedder=embedder)
     docs_dir = PROJECT_ROOT / dataset["documents_dir"]
     pdfs = sorted(docs_dir.glob("*.pdf"))
     if not pdfs and docs_dir.name == "sample_docs":
@@ -119,13 +124,50 @@ def build_eval_service(dataset: dict, workdir: Path):
         make_sample_docs()
         pdfs = sorted(docs_dir.glob("*.pdf"))
     if not pdfs:
-        raise SystemExit(f"No PDFs found in {docs_dir}")
+        raise EvaluationError(f"No PDFs found in {docs_dir}")
     for pdf in pdfs:
         service.upload(pdf.name, pdf.read_bytes())
     failures = [r for r, _ in service.process() if r.status != "processed"]
     if failures:
-        raise SystemExit(f"Failed to index: {[f.filename for f in failures]}")
+        raise EvaluationError(f"Failed to index: {[f.filename for f in failures]}")
     return service
+
+
+def run_retrieval_evaluation(settings, ks=(1, 3, 5), dataset_path: Path = DEFAULT_DATASET, embedder=None) -> dict:
+    """Run the retrieval evaluation with the given settings and return a JSON-friendly report.
+
+    Used by the API's evaluation lab so the UI can measure the effect of
+    chunking/retrieval settings. Works in a temporary directory; the real index
+    is never touched.
+    """
+    dataset = json.loads(Path(dataset_path).read_text(encoding="utf-8"))
+    ks = sorted(set(ks))
+    with tempfile.TemporaryDirectory(prefix="docmind-eval-") as tmp:
+        service = build_eval_service(dataset, Path(tmp), settings, embedder)
+        per_query, summary = evaluate_retrieval(service, dataset["retrieval"], ks)
+        top = max(ks)
+        return {
+            "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "dataset": dataset["name"],
+            "dataset_description": dataset["description"],
+            "n_queries": int(len(per_query)),
+            "n_documents": len(service.list_documents()),
+            "indexed_chunks": service.store.size,
+            "settings": {
+                "embedding_model": settings.embedding_model,
+                "chunk_size": settings.chunk_size,
+                "chunk_overlap": settings.chunk_overlap,
+            },
+            "metrics": [
+                {"k": int(row.k), "hit_rate": round(float(row.hit_rate), 4), "precision": round(float(row.precision), 4), "recall": round(float(row.recall), 4)}
+                for row in summary.itertuples()
+            ],
+            "mrr": round(float(per_query["mrr"].mean()), 4),
+            "misses": [
+                {"id": r["id"], "query": r["query"], "top1": r["top1"]}
+                for r in per_query[per_query[f"hit@{top}"] == 0].to_dict(orient="records")
+            ],
+        }
 
 
 def evaluate_retrieval(service, items: list[dict], ks: list[int]) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -231,7 +273,11 @@ def main() -> int:
     print(f"NOTE: {dataset['description']}\n")
 
     with tempfile.TemporaryDirectory(prefix="docmind-eval-") as tmp:
-        service = build_eval_service(dataset, Path(tmp))
+        try:
+            service = build_eval_service(dataset, Path(tmp))
+        except EvaluationError as exc:
+            print(f"Evaluation failed: {exc}")
+            return 1
         print(f"Indexed {len(service.list_documents())} documents -> {service.store.size} chunks\n")
 
         per_query, summary = evaluate_retrieval(service, dataset["retrieval"], ks)

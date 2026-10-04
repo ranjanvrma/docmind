@@ -1,9 +1,11 @@
 """DocMind command-line entry point.
 
-    python main.py api                         # run the FastAPI backend
-    python main.py ui                          # run the Streamlit frontend
+    python main.py api                         # run the API (and the built web UI, if web/dist exists)
     python main.py ingest file1.pdf file2.pdf  # upload + index PDFs without the UI
     python main.py train-classifier data/classifier/sample_training.csv
+
+The web UI lives in web/ (React + Vite). For development run `npm run dev`
+inside web/; for production run `npm run build` and the API serves web/dist.
 """
 
 from __future__ import annotations
@@ -12,11 +14,10 @@ import argparse
 import json
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 
-from app.config import PROJECT_ROOT, get_settings
+from app.config import get_settings
 from app.utils import setup_logging
 
 logger = logging.getLogger("docmind")
@@ -25,20 +26,21 @@ logger = logging.getLogger("docmind")
 def run_api(host: str, port: int, reload: bool) -> None:
     import uvicorn
 
-    uvicorn.run("app.api:app", host=host, port=port, reload=reload)
-
-
-def run_ui(port: int) -> None:
-    script = PROJECT_ROOT / "frontend" / "streamlit_app.py"
-    cmd = [sys.executable, "-m", "streamlit", "run", str(script), "--server.port", str(port)]
-    raise SystemExit(subprocess.call(cmd, env=os.environ.copy()))
+    # Always a single process (uvicorn's default): the FAISS index and its
+    # write lock live in process memory.
+    uvicorn.run("app.api:app", host=host, port=port, reload=reload, server_header=False, timeout_graceful_shutdown=30)
 
 
 def run_ingest(paths: list[Path]) -> int:
     from app.ingestion import IngestionError
     from app.service import DocMindService
+    from app.utils import StorageError
 
-    service = DocMindService(get_settings())
+    try:
+        service = DocMindService(get_settings())
+    except StorageError as exc:
+        logger.error("%s", exc)
+        return 1
     doc_ids = []
     for path in paths:
         try:
@@ -79,13 +81,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="DocMind: PDF semantic search and grounded Q&A")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    api = sub.add_parser("api", help="Run the FastAPI backend")
-    api.add_argument("--host", default="127.0.0.1")
-    api.add_argument("--port", type=int, default=8000)
+    api = sub.add_parser("api", help="Run the API (serves the built web UI too, if present)")
+    # Cloud platforms pass the port in $PORT; HOST=0.0.0.0 is needed inside containers.
+    api.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
+    api.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")))
     api.add_argument("--reload", action="store_true", help="Auto-reload on code changes (development)")
-
-    ui = sub.add_parser("ui", help="Run the Streamlit frontend")
-    ui.add_argument("--port", type=int, default=8501)
 
     ingest = sub.add_parser("ingest", help="Upload and index PDF files from disk")
     ingest.add_argument("paths", nargs="+", type=Path)
@@ -94,13 +94,15 @@ def main() -> int:
     train.add_argument("csv", type=Path, help="CSV with 'text' and 'label' columns")
 
     args = parser.parse_args()
-    setup_logging(get_settings().log_level)
+    try:
+        settings = get_settings()
+    except ValueError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+    setup_logging(settings.log_level)
 
     if args.command == "api":
         run_api(args.host, args.port, args.reload)
-        return 0
-    if args.command == "ui":
-        run_ui(args.port)
         return 0
     if args.command == "ingest":
         return run_ingest(args.paths)

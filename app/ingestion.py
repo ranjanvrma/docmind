@@ -31,10 +31,6 @@ class ExtractionResult:
     empty_pages: list[int] = field(default_factory=list)  # 1-based page numbers
     warnings: list[str] = field(default_factory=list)
 
-    @property
-    def total_chars(self) -> int:
-        return sum(len(p.text) for p in self.pages)
-
 
 def compute_document_id(pdf_bytes: bytes) -> str:
     return sha256_bytes(pdf_bytes)[:DOC_ID_LENGTH]
@@ -62,13 +58,15 @@ def extract_pages(
     doc_name: str,
     doc_id: str | None = None,
     min_chars_per_page: int = 20,
+    max_pages: int | None = None,
 ) -> ExtractionResult:
     """Extract text from every page of a PDF.
 
     Pages with fewer than ``min_chars_per_page`` non-whitespace characters are
     recorded in ``empty_pages`` and excluded from ``pages``. Scanned PDFs have
     no text layer, so they come back with every page empty and a warning (OCR
-    is out of scope for this project).
+    is out of scope for this project). Documents with more than ``max_pages``
+    pages are rejected before any text is extracted.
     """
     doc_id = doc_id or compute_document_id(pdf_bytes)
     try:
@@ -81,6 +79,10 @@ def extract_pages(
             raise IngestionError(f"'{doc_name}' is password-protected")
         if document.page_count == 0:
             raise IngestionError(f"'{doc_name}' contains no pages")
+        if max_pages is not None and document.page_count > max_pages:
+            raise IngestionError(
+                f"'{doc_name}' has {document.page_count} pages; the limit is {max_pages} (MAX_PAGES)"
+            )
 
         pages: list[PageText] = []
         empty_pages: list[int] = []

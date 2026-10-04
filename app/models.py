@@ -12,9 +12,9 @@ what the API exposes.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Domain objects
@@ -29,10 +29,6 @@ class PageText:
     doc_name: str
     page_number: int
     text: str
-
-    @property
-    def is_empty(self) -> bool:
-        return not self.text.strip()
 
 
 @dataclass
@@ -100,6 +96,15 @@ class DocumentRecord:
 # ---------------------------------------------------------------------------
 
 
+class LimitsOut(BaseModel):
+    max_upload_mb: int
+    max_request_mb: int
+    max_pages: int
+    max_files_per_upload: int
+    default_top_k: int
+    max_top_k: int
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     version: str
@@ -107,8 +112,17 @@ class HealthResponse(BaseModel):
     llm_provider: str
     llm_model: str
     llm_configured: bool
+    auth_required: bool
     documents: int
     indexed_chunks: int
+    limits: LimitsOut
+
+
+class DocumentChunkOut(BaseModel):
+    chunk_id: str
+    page_number: int
+    chunk_index: int
+    text: str
 
 
 class ClassificationOut(BaseModel):
@@ -238,5 +252,50 @@ class AskResponse(BaseModel):
     model: str | None
 
 
-class ErrorResponse(BaseModel):
-    detail: str
+class SettingsUpdate(BaseModel):
+    """Fields present in the request are changed; everything else is left alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm_provider: Literal["anthropic", "openai"] | None = None
+    llm_model: str | None = Field(default=None, max_length=200)
+    llm_base_url: str | None = Field(default=None, max_length=500)
+    llm_effort: str | None = Field(default=None, max_length=10)
+    llm_max_tokens: int | None = None
+    llm_temperature: float | None = None
+    llm_timeout_seconds: float | None = None
+    llm_api_key: str | None = Field(default=None, max_length=500)  # write-only
+    max_context_chars: int | None = None
+    top_k: int | None = None
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    min_chars_per_page: int | None = None
+    max_upload_mb: int | None = None
+    max_request_mb: int | None = None
+    max_pages: int | None = None
+    classifier_labels: list[str] | None = None
+
+
+class SettingsOut(BaseModel):
+    values: dict[str, Any]
+    overridden: list[str]
+    llm_api_key: dict[str, Any]
+    read_only: dict[str, Any]
+
+
+class LlmTestOut(BaseModel):
+    ok: bool
+    message: str
+    latency_ms: int | None
+    model: str
+
+
+class EvaluationRequest(BaseModel):
+    ks: list[int] = Field(default=[1, 3, 5], min_length=1, max_length=5)
+
+    @field_validator("ks")
+    @classmethod
+    def _range(cls, value: list[int]) -> list[int]:
+        if any(k < 1 or k > 20 for k in value):
+            raise ValueError("each k must be between 1 and 20")
+        return value

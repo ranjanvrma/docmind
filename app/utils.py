@@ -12,6 +12,11 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+
+class StorageError(Exception):
+    """Persistent application data (index or registry) is missing, unreadable or inconsistent."""
+
+
 _LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
 
 

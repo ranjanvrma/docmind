@@ -17,6 +17,29 @@ def test_extract_citations_handles_common_formats():
     assert extract_citations(answer) == [1, 2, 3, 4, 5, 6]
 
 
+@pytest.mark.parametrize(
+    "answer, expected",
+    [
+        ("In [2024] revenue rose [1].", [1]),  # regression: years were counted as citations
+        ("Figures for [1999, 2000] are missing.", []),
+        ("The value [1480] appears in the table [2].", [2]),
+        ("Out-of-range marker [12] is still a citation.", [12]),
+        ("Cited twice [3][Source 3].", [3, 3]),
+    ],
+)
+def test_bracketed_years_and_values_are_not_citations(answer, expected):
+    assert extract_citations(answer) == expected
+
+
+def test_bracketed_year_does_not_produce_invalid_citation_warning(service, sample_pdf, fake_llm):
+    service.upload("sample.pdf", sample_pdf)
+    service.process()
+    fake_llm.answer = "Under the [2024] policy, refunds are allowed within thirty days [1]."
+    result = service.ask("What is the refund policy?", top_k=2)
+    assert result.invalid_citations == []
+    assert result.cited_numbers == {1}
+
+
 def test_abstention_detection():
     assert is_abstention(NOT_FOUND_ANSWER)
     assert is_abstention("I could not find the answer in the uploaded documents. The sources discuss X.")

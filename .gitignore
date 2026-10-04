@@ -1,5 +1,9 @@
 # Secrets
 .env
+.env.*
+!.env.example
+*.pem
+*.key
 
 # Python
 __pycache__/
@@ -16,12 +20,25 @@ data/index/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/index/.gitkeep
+data/settings.json
 data/classifier/*.joblib
 data/classifier/*.report.json
 
 # Evaluation outputs (regenerate with python evaluation/evaluate.py)
 evaluation/results/*
 !evaluation/results/.gitkeep
+
+# Web UI (installed / built locally)
+web/node_modules/
+web/dist/
+
+# Logs, coverage, build caches
+*.log
+.coverage
+htmlcov/
+*.tsbuildinfo
+web/.vite/
+data/.write-test
 
 # Notebooks / editors / OS
 .ipynb_checkpoints/

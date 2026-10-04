@@ -1,34 +1,62 @@
-# One image, two roles: the API (default command) and the Streamlit UI
-# (docker-compose overrides the command). CPU-only.
+# DocMind: one image that serves the API and the built React UI on one port.
+# Stage 1 builds the UI with Node; stage 2 is the Python runtime. CPU-only.
+
+# ---------------------------------------------------------------- web build
+FROM node:22-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+# ---------------------------------------------------------------- runtime
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HF_HOME=/app/.cache/huggingface
 
 WORKDIR /app
 
 # Install the CPU build of PyTorch first; the default wheel pulls in ~2 GB of CUDA libraries.
-RUN pip install --index-url https://download.pytorch.org/whl/cpu torch
+RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<3"
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Bake the default embedding model into the image so containers start without a download.
+# Bake the embedding model into the image, then run offline so containers never
+# download at startup. To use a different model, rebuild with
+# --build-arg EMBEDDING_MODEL=<name> (the runtime EMBEDDING_MODEL defaults to it).
 ARG EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
+ENV HF_HUB_OFFLINE=1
 
 COPY app ./app
-COPY frontend ./frontend
 COPY evaluation ./evaluation
 COPY main.py .
-COPY .streamlit ./.streamlit
 COPY data/classifier/sample_training.csv data/classifier/README.md ./data/classifier/
+COPY --from=web /web/dist ./web/dist
 
 # Run as an unprivileged user.
-RUN useradd --create-home docmind && mkdir -p /app/data && chown -R docmind /app
+RUN useradd --create-home --uid 1000 docmind && mkdir -p /app/data && chown -R docmind /app
 USER docmind
 
-EXPOSE 8000 8501
-CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Production profile: refuses to start without DOCMIND_API_TOKEN and hides
+# /api/docs (set API_DOCS=true to show them). All persistent state lives in
+# DATA_DIR; mount a volume there or it is lost when the container is replaced.
+ENV APP_ENV=production \
+    DATA_DIR=/app/data \
+    HOST=0.0.0.0 \
+    PORT=8000
+
+EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('PORT', '8000'), timeout=4)" || exit 1
+
+# Listens on $PORT (most cloud platforms set it). Python is PID 1 (exec form),
+# so SIGTERM reaches uvicorn and it shuts down gracefully. Exactly one worker:
+# the FAISS index and write locks live in process memory.
+CMD ["python", "main.py", "api"]

@@ -1,31 +1,32 @@
+# Runtime dependencies. Upper bounds stop the next major version from breaking
+# a fresh install; the exact versions this project was last tested with are
+# listed in README.md ("Tested versions").
+# PyTorch is installed indirectly by sentence-transformers. On CPU-only machines
+# install the smaller CPU build first (see README / Dockerfile).
+
 # --- Core data / numerics ---
 numpy>=1.26,<3
-pandas>=2.1
+pandas>=2.1,<4
 
 # --- PDF extraction ---
-pymupdf>=1.24
+pymupdf>=1.24,<2
 
 # --- Embeddings + vector search ---
-sentence-transformers>=3.0
-faiss-cpu>=1.8
+sentence-transformers>=3.0,<7
+faiss-cpu>=1.8,<2
 
 # --- Classification (logistic regression on top of embeddings) ---
-scikit-learn>=1.4
-joblib>=1.3
+scikit-learn>=1.4,<2
+joblib>=1.3,<2
 
 # --- LLM providers ---
-anthropic>=1.0          # used when LLM_PROVIDER=anthropic
-httpx>=0.27             # used for OpenAI-compatible endpoints (OpenAI, Groq, Ollama, ...)
+anthropic>=1.0,<2       # used when LLM_PROVIDER=anthropic
+httpx>=0.27,<1          # used for OpenAI-compatible endpoints
 
 # --- Backend API ---
-fastapi>=0.110
-uvicorn[standard]>=0.29
-python-multipart>=0.0.9  # required by FastAPI for file uploads
-python-dotenv>=1.0
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+python-multipart>=0.0.9,<1  # required by FastAPI for file uploads
+python-dotenv>=1.0,<2
 
-# --- Frontend ---
-streamlit>=1.50
-requests>=2.31
-
-# --- Testing ---
-pytest>=8.0
+# The web UI (web/) is a separate Node/React project; see web/package.json.

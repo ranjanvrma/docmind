@@ -2,7 +2,7 @@
 
 This guide explains DocMind from the inside: what each file does, why it was built that way, the maths behind it, how it fails, and what an interviewer is likely to ask. Every section points at real code. Open the file next to the section as you read.
 
-**Suggested study order:** `app/service.py` (the whole pipeline in one place) → `ingestion.py` → `preprocessing.py` → `chunking.py` → `embeddings.py` → `vector_store.py` → `retrieval.py` → `prompts.py` → `qa.py` → `llm.py` → `classifier.py` → `api.py` → `frontend/streamlit_app.py` → `evaluation/evaluate.py`. Run `notebooks/pipeline_walkthrough.ipynb` alongside to see the intermediate outputs.
+**Suggested study order:** `app/service.py` (the whole pipeline in one place) → `ingestion.py` → `preprocessing.py` → `chunking.py` → `embeddings.py` → `vector_store.py` → `retrieval.py` → `prompts.py` → `qa.py` → `llm.py` → `classifier.py` → `api.py` → `runtime_settings.py` → `evaluation/evaluate.py` → `web/src/lib/` (API client, safe Markdown, citations) → `web/src/pages/`. Run `notebooks/pipeline_walkthrough.ipynb` alongside to see the intermediate outputs.
 
 ---
 
@@ -10,12 +10,12 @@ This guide explains DocMind from the inside: what each file does, why it was bui
 
 DocMind has three layers:
 
-1. **Frontend** (`frontend/streamlit_app.py`): a Streamlit page containing no ML code. Every button press becomes an HTTP request to the API.
+1. **Frontend** (`web/`): a React + TypeScript single-page app containing no ML code. Every action is an HTTP request to the API under `/api`. In production, FastAPI also serves the built app, so the UI and API share one origin.
 2. **API** (`app/api.py`): FastAPI routes. Each route validates input with a Pydantic model (`app/models.py`), calls one method on `DocMindService`, and converts domain exceptions into HTTP status codes.
 3. **Core pipeline** (`app/*.py`): plain Python modules, each doing one job, orchestrated by `DocMindService` in `app/service.py`.
 
 ```
-Streamlit ──HTTP/JSON──▶ FastAPI ──▶ DocMindService ──▶ ingestion → preprocessing → chunking → embeddings → vector_store
+React SPA ──/api (JSON)──▶ FastAPI ──▶ DocMindService ──▶ ingestion → preprocessing → chunking → embeddings → vector_store
                                                     ├─▶ retrieval (embeddings + vector_store)
                                                     ├─▶ qa (retrieval + prompts + llm)
                                                     └─▶ classifier (embeddings)
@@ -70,11 +70,11 @@ A `Settings` dataclass built from environment variables (`load_settings()`), wit
 PDF text has layout artifacts. `clean_text` fixes them in this order:
 1. Unicode NFKC normalisation and ligature expansion (`ﬁ` → `fi`), plus removal of zero-width and soft-hyphen characters.
 2. Rejoins words hyphenated at a line break (`infor-\nmation` → `information`).
-3. Drops lines that are only a page number (`12`, `Page 3 of 10`).
+3. `_remove_page_number_lines`: drops explicit page labels (`Page 3`, `Page 3 of 10`) wherever they appear. A bare number (`12`, `12 / 40`) is dropped only if it is the first or last non-empty line of the page **and** equals that page's number (`preprocess_pages` passes `page_number` in). Standalone years and table values are therefore kept. An earlier version deleted every number-only line, which destroyed table data; regression tests in `tests/test_preprocessing.py` now cover this. Printed numbering that is offset from the physical page (e.g. roman-numeral front matter) is left in the text, a deliberate trade-off.
 4. Collapses runs of spaces.
 5. `_join_wrapped_lines`: within a paragraph (text between blank lines), line breaks become spaces, except before bullet or numbered items.
 
-`find_repeated_lines` detects running headers and footers: short lines (≤ 80 characters) that appear on at least 60% of pages, in documents with 3 or more pages. It deliberately does *not* lowercase text, remove stop words, stem or strip punctuation. Transformer embedders were trained on natural text, and the LLM needs the original wording to quote accurately.
+`find_repeated_lines` detects running headers and footers: short lines (≤ 80 characters) that appear on at least 60% of pages, in documents with 3 or more pages. Preprocessing deliberately does *not* lowercase text, remove stop words, stem or strip punctuation, because the LLM needs the original wording to quote accurately. (The default embedding model's tokenizer is uncased and lowercases its input internally, so preserving case only matters for the LLM.) Known heuristic weaknesses: a compound hyphenated at a line break is joined (`well-\nknown` → `wellknown`).
 
 ### `chunking.py`: splitting into retrievable units
 See [§5 Algorithms](#5-important-algorithms). Key decisions: chunks never cross pages, they are built from whole sentences, overlap is made of whole trailing sentences, and sizes are measured in characters.
@@ -87,20 +87,20 @@ See [§5 Algorithms](#5-important-algorithms). Key decisions: chunks never cross
 - `IndexIDMap2(IndexFlatIP(dim))`: the inner index does exact inner-product search, and the ID map lets us assign our own 64-bit IDs and later `remove_ids`, which deleting or re-processing a document needs.
 - IDs come from a monotonically increasing `_next_id` that is never reused, so a removed ID can never collide with new metadata.
 - `save()` serialises the index to bytes and writes each file atomically (temp file + `os.replace`). The manifest is written last and records the vector count.
-- `load_or_create()` refuses to load if the manifest's embedding model or dimension differs from the configured one, or if the index size, metadata count and manifest size disagree. Serving results from a mismatched index would give meaningless scores without any visible error, so a loud failure is better.
+- `load_or_create()` refuses to load if the manifest's embedding model or dimension differs from the configured one, or if the index size, metadata count and manifest size disagree. Serving results from a mismatched index would give meaningless scores without any visible error, so a loud failure is better. A missing, unreadable or corrupt `index.faiss`, `metadata.json` or `manifest.json` also raises `VectorStoreError` (never a raw `FileNotFoundError`/`RuntimeError`), with instructions to delete the index directory and restart. When that happens at API startup, the API still starts and every endpoint returns 503 with that message.
 - A search with a document filter over-fetches (the whole index) and then filters. For a flat index this costs the same as a normal search.
 
 ### `retrieval.py`: `Retriever.search`
 Validates the query, embeds it with `embed_query`, calls `store.search`, and wraps the hits in ranked `SearchResult` objects. It logs the result count, timing and query *length*, but not the query text, which may be sensitive.
 
 ### `prompts.py`: prompt and context
-`SYSTEM_PROMPT` states the rules: use only the numbered sources, cite `[n]` after each claim, reply with the exact `NOT_FOUND_ANSWER` sentence when the answer is not in the sources, flag partial answers and conflicts. `build_context` adds `[Source n] (document: X, page: Y)` blocks in rank order until `MAX_CONTEXT_CHARS` would be exceeded (always at least one source), and returns which results were included. Only those can be shown as sources.
+`SYSTEM_PROMPT` states the rules: use only the numbered sources, cite `[n]` after each claim, begin the reply with the exact `NOT_FOUND_ANSWER` sentence when the answer is not in the sources, flag partial answers and conflicts, treat source text as untrusted (never follow instructions found in it), and answer in plain text without links or images. `neutralize_source_text` removes `<sources>` tags and turns `[Source n` inside document text into `(Source n`, so a PDF cannot close the context block or forge a source header. `build_context` adds `[Source n] (document: X, page: Y)` blocks in rank order until `MAX_CONTEXT_CHARS` would be exceeded (always at least one source), and returns which results were included. Only those can be shown as sources.
 
 ### `llm.py`: provider abstraction
-`LLMClient` is an abstract class with one method, `generate(system_prompt, user_prompt) -> str`. `AnthropicClient` uses the official `anthropic` SDK. `OpenAICompatibleClient` POSTs to `{base_url}/chat/completions` with `httpx`, which covers OpenAI, Groq, OpenRouter, Together and local Ollama. `create_llm_client(settings)` is the only place that knows which provider is in use. Both clients translate provider errors (bad key, rate limit, network failure, empty or refused response) into `LLMError`, which the API turns into HTTP 502. A missing key raises `LLMNotConfiguredError`, which becomes HTTP 503.
+`LLMClient` is an abstract class with one method, `generate(system_prompt, user_prompt) -> str`. `AnthropicClient` uses the official `anthropic` SDK. `OpenAICompatibleClient` POSTs to `{base_url}/chat/completions` with `httpx`. It is intended for OpenAI, Groq, OpenRouter, Together and local Ollama, but it always sends `max_tokens` and `temperature` (some newer models reject these), and it has only been tested against a mock transport. `AnthropicClient` has not been tested at all yet, and neither client has been called against a live API. `LLM_TEMPERATURE` is used only by the OpenAI-compatible client. `create_llm_client(settings)` is the only place that knows which provider is in use. Both clients translate provider errors (bad key, rate limit, network failure, empty or refused response) into `LLMError`, which the API turns into HTTP 502. A missing key raises `LLMNotConfiguredError`, which becomes HTTP 503.
 
 ### `qa.py`: RAG with citation checks
-`answer_question`: retrieve → return `NOT_FOUND_ANSWER` immediately if nothing was retrieved (no LLM call) → build context → call the LLM → `extract_citations` (a regex for `[1]`, `[2, 3]`, `[Source 4]`) → split citations into valid ones (1…number of sources) and `invalid_citations` → `answered_from_documents = not abstained and at least one valid citation`.
+`answer_question`: retrieve → return `NOT_FOUND_ANSWER` immediately if nothing was retrieved (no LLM call) → build context → call the LLM → `extract_citations` (a regex for `[1]`, `[2, 3]`, `[Source 4]`, limited to one- or two-digit numbers because a prompt never holds more than 20 sources; bracketed years such as `[2024]` are therefore not treated as citations) → split citations into valid ones (1…number of sources) and `invalid_citations` → `answered_from_documents = not abstained and at least one valid citation`.
 
 ### `classifier.py`: document category
 See [§21](#21-how-classification-works).
@@ -109,9 +109,9 @@ See [§21](#21-how-classification-works).
 A thread-safe dict of `DocumentRecord`, persisted to one JSON file with atomic writes. It tracks the lifecycle `uploaded → processed | failed`.
 
 ### `service.py`: orchestration
-`DocMindService.__init__` builds the embedder, loads or creates the vector store, the registry, the retriever and the classifier. The LLM client is created lazily, so the app starts without an API key. `process()` skips documents that are already processed and present in the index unless `force=True`, which is why nothing is ever re-embedded unnecessarily. `_process_one` removes any existing vectors for the document first, so re-processing replaces rather than duplicates. It catches failures per document, marks the record `failed` with a readable error, and keeps the index consistent. A `threading.Lock` serialises writes such as `process` and `delete`.
+`DocMindService.__init__` builds the embedder, loads or creates the vector store, the registry, the retriever and the classifier. The LLM client is created lazily, so the app starts without an API key. `process()` skips documents that are already processed and present in the index unless `force=True`, which is why nothing is ever re-embedded unnecessarily. `_process_one` removes any existing vectors for the document first, so re-processing replaces rather than duplicates. It works on a copy of the registry record, catches failures per document, and writes `failed` records straight to the registry. Successful records are committed by `_save_index_then_commit`: the index is saved first, and only then are the documents marked `processed`. If the save fails, the new vectors are removed and the documents are marked `failed` with a message, and a `VectorStoreError` is raised. At startup, `_reconcile_registry_with_index` makes the index contain exactly the `processed` documents: stray vectors are dropped, and `processed` documents with no vectors (after a crash or a deleted index directory) go back to `uploaded`, so "process pending documents" re-indexes them. A `threading.Lock` serialises writes such as `process` and `delete`.
 
-### `api.py`, `frontend/streamlit_app.py`, `evaluation/evaluate.py`
+### `api.py`, `runtime_settings.py`, `web/`, `evaluation/evaluate.py`
 Covered in §22, §23 and §20.
 
 ## 4. Why each technology
@@ -123,7 +123,7 @@ Covered in §22, §23 and §20.
 | **FAISS** | In-process, no server, exact search out of the box, and a path to approximate indexes (IVF, HNSW) if the data grows. | Chroma, Qdrant, Weaviate, pgvector: all add a service or a heavier dependency, which is unnecessary for a local single-user app. |
 | **Direct RAG code, no LangChain** | The pipeline is about 150 lines, and writing it explicitly makes every step visible and testable. | LangChain / LlamaIndex: faster to prototype, but they hide the retrieval and prompt details this project is meant to demonstrate. |
 | **FastAPI** | Pydantic validation, automatic OpenAPI docs, dependency injection, simple testing with `TestClient`. | Flask (no built-in validation), Django (too heavy). |
-| **Streamlit** | A usable UI in one Python file. | Gradio (similar), React (far more work for no ML benefit). |
+| **React + TypeScript (Vite, Tailwind, Radix, Motion, React Three Fiber)** | A product-quality interface: interactive citations, real upload progress, an evaluation lab, accessible components, a lazy-loaded 3D scene. Served by FastAPI on the same origin. | Streamlit (the first version used it: fast to build, but limited interaction and design), Gradio. |
 | **scikit-learn LogisticRegression** | Strong, fast, well-calibrated baseline on top of embeddings, and works with little data. | Fine-tuning a transformer (needs far more labelled data and a GPU), SVM (no native probabilities), zero-shot NLI models (slow). |
 
 ## 5. Important algorithms
@@ -181,12 +181,12 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 2. **Chunks never cross pages.** Page citations are always exact. The cost is split context at page breaks.
 3. **Normalised embeddings + inner-product index.** Scores are directly interpretable as cosine similarity.
 4. **`IndexIDMap2` + never-reused IDs.** Documents can be deleted or re-processed without rebuilding the index, and metadata can never be attached to the wrong vector.
-5. **Manifest check on load.** A changed embedding model or index/metadata drift raises a loud error instead of silently returning wrong results.
+5. **Manifest check on load, and registry reconciliation.** A changed embedding model, index/metadata drift or damaged files raise a clear error instead of silently returning wrong results. The document registry is updated only after the index is saved, and is reconciled with the index at startup.
 6. **Skip already-processed documents.** Embedding is the most expensive step and never runs twice for the same content unless forced.
 7. **The LLM sees only retrieved chunks, within a character budget.** Cost and latency are bounded, and "the answer came from these passages" is literally true.
 8. **Sources = exactly what was in the prompt, and citations are verified.** The UI cannot display a source that was not provided, and invented citation numbers are surfaced as warnings.
 9. **A fixed abstention sentence.** Makes "I don't know" detectable in code and in evaluation.
-10. **Lazy LLM client.** Search and classification work with no API key, and `/ask` fails with a clear 503.
+10. **Lazy LLM client.** Search and classification work with no API key, and `/api/ask` fails with a clear 503.
 11. **Zero-shot fallback for classification.** Something useful works on day one, and supervised training is opt-in once real labels exist.
 12. **Page-level evaluation labels.** They survive changes to chunking parameters, so different configurations can be compared on the same dataset.
 
@@ -206,11 +206,12 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 | Garbled words, missing spaces | Unusual PDF font encoding, or text drawn as vector paths | Try another extractor, or OCR |
 | Right document but wrong passage retrieved | Chunks too large or too small; vocabulary mismatch | Tune `CHUNK_SIZE` with `evaluate.py`; try a stronger embedding model; add BM25 |
 | Exact codes or names not found | Dense embeddings blur rare tokens | Hybrid keyword + dense search |
-| API won't start: "index … was built with …" | `EMBEDDING_MODEL` changed after indexing | Delete `data/index/` and re-process, or restore the model |
+| Every endpoint returns 503 "Search index unavailable: … was built with …" | `EMBEDDING_MODEL` changed after indexing | Delete `data/index/` and restart (documents are marked for re-processing), or restore the model |
+| Every endpoint returns 503 "Search index unavailable: … missing / corrupt …" | Index files deleted or damaged | Delete `data/index/` and restart, then click *Process pending documents* |
 | Answer ignores the documents or cites wrong sources | Weak model, relevant chunk not retrieved, or context truncated | Check `context_has_relevant_page` in the QA evaluation; increase top-k or `MAX_CONTEXT_CHARS` |
 | "I could not find the answer…" although it is in the PDF | Retrieval miss (answer ranked below top-k), or the answer is split across a page break | Increase top-k; inspect the search results for the same question |
-| `/ask` returns 503 | No `LLM_API_KEY` | Configure `.env` |
-| `/ask` returns 502 | Bad key, rate limit, network error, wrong base URL or model name | The error detail and API logs show which |
+| `/api/ask` returns 503 | No `LLM_API_KEY` | Configure `.env` |
+| `/api/ask` returns 502 | Bad key, rate limit, network error, wrong base URL or model name | The error detail and API logs show which |
 | Slow first request | Model download or loading | Loaded once at startup; the Docker image bakes the model in |
 
 ## 10–11. Interview questions and what you should be able to say
@@ -231,11 +232,11 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 
 **Q: What does FAISS do? Is your search exact?** Yes. `IndexFlatIP` compares the query with every vector. For large collections you would switch to IVF or HNSW, which are approximate. See §17.
 
-**Q: How do you keep FAISS and your metadata in sync?** Integer IDs assigned by us (`IndexIDMap2`), never reused; both structures are updated under a lock; atomic file writes; a manifest with the vector count, checked on load.
+**Q: How do you keep FAISS and your metadata in sync?** Integer IDs assigned by us (`IndexIDMap2`), never reused; both structures are updated under a lock; atomic file writes; a manifest with the vector count, checked on load. The document registry is a third store: it is updated only after the index save succeeds, and it is reconciled with the index at startup.
 
 **Q: What is RAG and why use it instead of fine-tuning?** RAG supplies relevant text at question time. It works with new documents instantly (fine-tuning would need retraining), it can cite sources, it is cheaper, and the knowledge is inspectable and deletable. Fine-tuning changes *behaviour and style* better than it adds reliably-retrievable facts.
 
-**Q: How do you reduce hallucinations?** Retrieval restricts the context; the prompt forbids outside knowledge and requires citations; a fixed abstention sentence; no LLM call at all when nothing is retrieved; citation numbers are verified; the UI shows the exact passages so the user can check. Be honest: none of this *guarantees* faithfulness. See §19.
+**Q: How do you reduce hallucinations?** Retrieval restricts the context; the prompt forbids outside knowledge and requires citations; a fixed abstention sentence; no LLM call at all when nothing is retrieved; citation numbers are verified; source text is marked as untrusted and sanitised; the UI shows the exact passages so the user can check. Be honest: none of this *guarantees* faithfulness. See §19.
 
 **Q: How do you know your retrieval is any good?** Show `evaluate.py`: a labelled set of queries with relevant pages, then Hit@K, Precision@K, Recall@K and MRR. Then add the caveat that the bundled set is a tiny demo written by the author, so its scores are optimistic. A real evaluation needs independently written queries over real documents.
 
@@ -245,7 +246,7 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 
 **Q: What happens if two users upload at the same time?** Uploads are independent (content-addressed files). Processing and deletion are serialised by a lock inside one process. Multiple API worker processes would *not* share that lock or the in-memory index; that is a known single-process limitation. A real deployment would use a vector database and a job queue.
 
-**Q: How did you handle security?** API keys only from the environment, never logged; content-hash storage names (no path traversal); `sanitize_filename` for display names; magic-byte and size checks; the upload read is capped at the limit + 1 byte; PDFs are parsed, never executed; the container runs as a non-root user; query text and document content are not logged. Known gaps: no authentication, and `joblib` model files must be trusted (pickle).
+**Q: How did you handle security?** API keys only from the environment, never logged and hidden from `Settings.__repr__`; an optional shared API token (`DOCMIND_API_TOKEN`, constant-time comparison, `/api/health` exempt); CORS off unless explicit origins are configured; content-hash storage names (no path traversal); `sanitize_filename` for display names; the upload request size is checked from `Content-Length` *before* the body is read (413/411), then per-file size, magic bytes and a page-count limit; PDFs are parsed, never executed; prompt-injection mitigations (untrusted-source rule, delimiter sanitising, literal rendering in the UI so injected links/images never load); query text and document content are not logged. Known gaps: no rate limiting or per-user accounts; prompt injection is mitigated, not solved; the PDF parser is not sandboxed; and `joblib` model files must be trusted (pickle).
 
 **Q: What would you improve first?** Hybrid retrieval + re-ranking, measured on a real evaluation set; then OCR, then background processing.
 
@@ -253,10 +254,10 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 
 ## 12. Internals: uploading a PDF
 
-1. Streamlit's *Upload & process* sends `POST /documents/upload` as multipart form data.
-2. `api.upload_documents` reads each file, at most `MAX_UPLOAD_MB` + 1 bytes (so an oversized file is detected without reading all of it), and calls `service.upload(name, data)`.
+1. The UI's drop zone (`web/src/components/upload/UploadZone.tsx`) sends `POST /api/documents/upload` as multipart form data with `XMLHttpRequest`, which reports real upload progress.
+2. Starlette receives each file and spools it to a temporary file. `api.upload_documents` then reads at most `MAX_UPLOAD_MB` + 1 bytes into memory and calls `service.upload(name, data)`. Note that the whole upload has already reached the server by then; the limit caps memory use, not network or disk use.
 3. `service.upload` runs `sanitize_filename` (strips directories and odd characters), `validate_pdf_upload` (extension, `%PDF-`, size), then `compute_document_id` (SHA-256 prefix). If the registry already has that ID, it returns `duplicate`. Otherwise it writes `data/raw/<doc_id>.pdf` atomically and saves a `DocumentRecord(status="uploaded")`.
-4. The UI then calls `POST /documents/process {"doc_ids": [...]}` → `service.process` → `_process_one`:
+4. The UI then calls `POST /api/documents/process {"doc_ids": [...]}` → `service.process` → `_process_one`:
    1. `store.remove_document(doc_id)` (a no-op the first time; prevents duplicates on re-processing).
    2. `extract_pages`: PyMuPDF text per page; empty pages recorded; warnings for scanned files.
    3. `preprocess_pages`: header/footer removal, then `clean_text`.
@@ -270,7 +271,7 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 
 ## 13. Internals: a search
 
-1. The UI sends `POST /search {"query", "top_k", "doc_ids"}`.
+1. The UI sends `POST /api/search {"query", "top_k", "doc_ids"}`.
 2. Pydantic `SearchRequest` rejects a blank query or a `top_k` outside 1–20 with 422 before any code runs.
 3. `service.search` → `Retriever.search` → `embedder.embed_query(query)`: one 1 × 384 unit vector, using the *same model* as the chunks (essential, because vectors from different models are not comparable).
 4. `store.search(vector, k)` → FAISS computes the inner product with every stored vector and returns the top-k scores and IDs (IDs of −1 mean padding and are skipped).
@@ -279,11 +280,11 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 
 ## 14. Internals: asking a question
 
-1. `POST /ask` → `service.ask` → `self.llm` (created on first use; `LLMNotConfiguredError` → 503).
+1. `POST /api/ask` → `service.ask` → `self.llm` (created on first use; `LLMNotConfiguredError` → 503).
 2. `answer_question` runs the same retrieval as §13.
 3. With no results, it returns `NOT_FOUND_ANSWER` and never calls the LLM.
 4. `build_context` numbers the chunks `[Source 1…n]` with document and page, stopping at `MAX_CONTEXT_CHARS`.
-5. `build_user_prompt` wraps the context in `<sources>` tags followed by the question; `SYSTEM_PROMPT` carries the rules.
+5. `build_user_prompt` wraps the context in `<sources>` tags followed by the question; `SYSTEM_PROMPT` carries the rules. Chunk text is passed through `neutralize_source_text` first.
 6. `timed_generate` → `AnthropicClient` or `OpenAICompatibleClient` `.generate()`; the call is logged with sizes and duration, not content.
 7. `extract_citations` finds `[n]` markers. Valid ones mark the corresponding sources as `cited=True`; out-of-range numbers go to `invalid_citations`.
 8. `answered_from_documents` is true only if the model did not abstain *and* cited at least one real source.
@@ -291,15 +292,17 @@ P(class c | x) = softmax(W x + b)_c, trained by minimising cross-entropy with L2
 
 ## 15. How embeddings work (in this project)
 
-`all-MiniLM-L6-v2` is a 6-layer transformer (a distilled MiniLM). Text is tokenised into word-pieces (truncated at 256), each token gets a contextual vector from self-attention layers, and **mean pooling** over the token vectors gives one 384-dimensional sentence vector. sentence-transformers then L2-normalises it (we pass `normalize_embeddings=True`).
+`all-MiniLM-L6-v2` is a small BERT-architecture encoder (verified by inspecting the loaded model: 6 layers, 12 attention heads, hidden size 384, about 22.7M parameters). Its pipeline is `Transformer → Pooling(mean) → Normalize`. Text is lowercased and tokenised into word-pieces by an uncased tokenizer (`"Hello WORLD"` → `hello`, `world`) and truncated at 256 tokens. Each token gets a contextual vector from the self-attention layers, **mean pooling** over the token vectors gives one 384-dimensional sentence vector, and the model's own `Normalize` layer makes it unit length. DocMind also passes `normalize_embeddings=True` and re-normalises in `normalize_rows`, which is redundant for this model but protects against custom encoders.
 
-The model was fine-tuned with a **contrastive objective** on over a billion sentence pairs (question–answer, paraphrases and similar). Matching pairs were pushed together and non-matching pairs apart. That training is why "How do I get my money back?" lands near "Customers may request a refund within 30 days" even though they share almost no words. `tests/test_embeddings.py::test_real_model_captures_semantic_similarity` checks exactly this.
+DocMind uses the model **as-is: it does no fine-tuning**. sentence-transformers runs the model on PyTorch and downloads it from the Hugging Face Hub; DocMind's own code never imports `torch` or `transformers`.
+
+According to its model card, the model's publisher fine-tuned it with a **contrastive objective** on over a billion sentence pairs (question–answer, paraphrases and similar). Matching pairs were pushed together and non-matching pairs apart. That training is why "How do I get my money back?" lands near "Customers may request a refund within 30 days" even though they share almost no words. `tests/test_embeddings.py::test_real_model_captures_semantic_similarity` checks exactly this.
 
 Individual dimensions have no human-readable meaning; only distances between vectors matter. The same model must embed both the documents and the queries.
 
 ## 16. How cosine similarity works
 
-cos(a, b) = (a · b) / (‖a‖‖b‖): the cosine of the angle between two vectors. 1 means the same direction, 0 means orthogonal (unrelated), and −1 means opposite. For sentence embeddings, scores are rarely negative, and in practice unrelated text scores around 0–0.2 with MiniLM, while strong matches score 0.5 or more. Scores are *relative*: they depend on the model and the corpus, so there is no universal "relevant" threshold, which is why DocMind ranks rather than thresholds.
+cos(a, b) = (a · b) / (‖a‖‖b‖): the cosine of the angle between two vectors. 1 means the same direction, 0 means orthogonal (unrelated), and −1 means opposite. For sentence embeddings, scores are rarely negative, and in this repository's sample runs unrelated text scored around 0–0.2, while correct top matches scored only about 0.35–0.47 (e.g. "laptop stolen" 0.40), so don't expect "good" matches to exceed some fixed value like 0.5. Scores are *relative*: they depend on the model and the corpus, so there is no universal "relevant" threshold, which is why DocMind ranks rather than thresholds.
 
 Because our vectors are unit length, the denominator is 1 and cosine = dot product. NumPy example from the notebook: `scores = chunk_vectors @ query_vector`.
 
@@ -334,7 +337,7 @@ An LLM generates the most plausible continuation token by token. It has no built
 - the model **over-generalises** from similar-looking text, e.g. mixing numbers from two sources;
 - **long contexts** dilute attention, so details in the middle of the context get less weight.
 
-DocMind's mitigations: a strict system prompt and an allowed "not found" answer; the prompt contains only retrieved passages; no LLM call when nothing is retrieved; a bounded context; citation numbers are verified; and passages are shown for human checking. Remaining risk: the model can cite a real source for a claim that source does not actually support. Detecting that needs claim-level verification (an NLI model or a verifier LLM), listed under future improvements.
+DocMind's mitigations: a strict system prompt and an allowed "not found" answer (detected only at the *start* of the reply, so a partial answer that mentions it later still counts as grounded); source text marked as untrusted and sanitised against delimiter/header forgery; the prompt contains only retrieved passages; no LLM call when nothing is retrieved; a bounded context; citation numbers are verified; and passages are shown for human checking. Remaining risk: the model can cite a real source for a claim that source does not actually support. Detecting that needs claim-level verification (an NLI model or a verifier LLM), listed under future improvements.
 
 ## 20. How retrieval quality is evaluated
 
@@ -356,26 +359,39 @@ How to do it properly: collect real documents; have other people write questions
 
 **Zero-shot mode** (default): each label has a natural-language description (`CATEGORY_DESCRIPTIONS`), which is embedded once and cached. The prediction is the label whose description has the highest cosine similarity with the document vector. The scores shown are raw cosine similarities, *not* probabilities, and the UI says so. In the sample run, the policy document scored Policy 0.2218 vs Report 0.2208: a correct label, but a margin too small to trust.
 
-**Supervised mode:** `python main.py train-classifier data.csv` → `load_training_data` (validate columns, strip, deduplicate) → embed every text → **stratified k-fold cross-validation** (`cross_val_predict`, k = min(5, smallest class size)) to *measure* accuracy and macro-F1 on data the model hasn't seen → fit on all data → save with `joblib` together with the embedding model's name. At startup, `DocumentClassifier` loads it only if that name matches the current embedding model (the features would otherwise be meaningless). Predictions are softmax probabilities from logistic regression.
+**Supervised mode:** `python main.py train-classifier data.csv` → `load_training_data` (validate columns, strip, deduplicate) → embed every text → **stratified k-fold cross-validation** (`cross_val_predict`, k = min(5, smallest class size)) to *measure* accuracy and macro-F1 on data the model hasn't seen → fit on all data → save with `joblib` together with the embedding model's name. At startup, `DocumentClassifier` loads it only if that name matches the current embedding model (the features would otherwise be meaningless). Predictions are softmax probabilities from logistic regression. In supervised mode the labels are the classes present in the training CSV; `CLASSIFIER_LABELS` only applies to zero-shot mode. The only training here is this logistic regression on *frozen* embeddings: no neural network weights are trained.
 
 **Honesty points:** the bundled 48 examples are synthetic. The measured cross-validation accuracy of 0.81 is on those only. In the sample run, the supervised model labelled the ML lecture notes as "Research Paper". A likely explanation: embeddings capture *topic* more strongly than *document form*, and the training texts for "Notes" covered other topics. More varied real training data is the fix, and it is also a good talking point about dataset bias.
 
 ## 22. How the FastAPI layer works
 
-- `create_app(service=None)` is an **app factory**. In production, a `lifespan` handler builds one `DocMindService` at startup (loading the model and index once) and stores it on `app.state`. Tests pass in a service built with the fake encoder and fake LLM.
+- `create_app(service=None)` is an **app factory**. When the API runs normally (not under test), a `lifespan` handler builds one `DocMindService` at startup (loading the model and index once) and stores it on `app.state`. If the index cannot be loaded, it stores the error instead, and `get_service` answers every request with 503 and that message. Tests pass in a service built with the fake encoder and fake LLM.
 - Routes get the service through `Depends(get_service)` (FastAPI dependency injection).
 - **Validation:** request bodies are Pydantic models (`SearchRequest`, `AskRequest`, `ProcessRequest`) with field constraints (`min_length`, `ge`/`le` bounds, a custom non-blank validator). FastAPI returns **422** automatically when validation fails.
-- **Status codes:** 201 upload, 400 all files rejected, 404 unknown document, 204 delete, 422 invalid input, 502 upstream LLM failure, 503 LLM not configured, 500 internal errors (logged with a traceback; the client gets a generic message).
+- **Middleware:** `UploadSizeLimitMiddleware` rejects `POST /api/documents/upload` requests whose `Content-Length` exceeds `MAX_REQUEST_MB` (413), or that have no `Content-Length` (411), before the multipart body is parsed. `CORSMiddleware` is added only if `CORS_ALLOW_ORIGINS` is set. `require_token` (a dependency on every route except `/api/health`) enforces `DOCMIND_API_TOKEN` when it is set.
+- **Status codes:** 201 upload, 400 all files rejected, 401 missing/invalid token, 404 unknown document, 411/413 upload request size, 204 delete, 422 invalid input, 502 upstream LLM failure, 503 LLM not configured or search index unavailable (every endpoint, if the index could not be loaded at startup), 500 internal errors (logged with a traceback; the client gets a generic message).
 - **Sync vs async:** CPU-bound routes (search, process) are plain `def`, so FastAPI runs them in a thread pool and they don't block the event loop. Upload is `async def` because it awaits `UploadFile.read`.
 - Response models (`response_model=...`) define the output schema and appear in the auto-generated docs at `/docs`.
 
-## 23. How Streamlit communicates with the backend
+## 23. How the web UI communicates with the backend
 
-Streamlit re-runs the entire script from top to bottom on every interaction. On each run, `streamlit_app.py` calls `GET /health` and `GET /documents` to draw the sidebar, and button handlers call `POST /documents/upload`, `/documents/process`, `/search`, `/ask` and `DELETE /documents/{id}` via `requests`. The API URL comes from `DOCMIND_API_URL` (in Docker Compose, `http://api:8000`, the service name on the compose network). `api_request` turns connection errors, timeouts and HTTP errors (including FastAPI's 422 detail lists) into readable `st.error` messages. Forms (`st.form`) prevent a request from firing on every keystroke. The UI keeps no ML state of its own; restarting it loses nothing.
+The React app (`web/`) talks to the API only through `web/src/lib/api.ts`, using `fetch` to the **same origin** under `/api`. In development, Vite proxies `/api` to the backend; in production, FastAPI serves `web/dist` itself. So there is no CORS, and no API URL or token is compiled into the bundle.
+
+- **Server state** lives in TanStack Query (`lib/queries.ts`): `health` (refreshed every 20 s), `documents`, document details and chunks, and settings. Mutations (delete, re-index, save settings) invalidate what they change.
+- **Authentication:** if `/api/health` reports `auth_required`, or any call returns 401, the token dialog asks the user for the access token. It is stored in the browser (session or local storage) and sent as `X-API-Key`.
+- **Errors** become `ApiError` objects with a friendly message (`lib/errors.ts`). Server details are shown only for 4xx responses, which the API writes for users; 5xx details, which may contain internal paths, are never displayed.
+- **Uploads** use `XMLHttpRequest` for real byte progress; processing is one request without progress, so the pipeline view shows its stages as one indeterminate step.
+- **Untrusted text** (passages, answers, filenames) is always rendered as React text. Answers go through a tiny Markdown subset (`lib/markdown.ts`) that never produces links, images or HTML; `[n]` markers become interactive citation chips.
+- **Conversation state** for the Ask page lives in a React context above the router, so it survives navigation. Each question is still answered independently by the backend.
+
+See `docs/FRONTEND.md` for the full structure.
 
 ## 24. How Docker is used
 
-- **`Dockerfile`**: `python:3.11-slim` base; installs the **CPU-only** PyTorch wheel first (the default wheel pulls in gigabytes of CUDA libraries), then `requirements.txt`; **pre-downloads the embedding model** during the build so containers start without network access; copies only the code it needs; runs as a non-root `docmind` user; the default command runs Uvicorn on port 8000.
-- **`docker-compose.yml`**: two services from one image. `api` reads `.env` and mounts `./data` so uploads and indexes survive container restarts, and has a health check on `/health`. `ui` overrides the command to run Streamlit, points `DOCMIND_API_URL` at `http://api:8000`, and starts only after the API is healthy. Compose earns its place here because the app really is two processes that need to find each other.
+> **Unverified.** Docker was not available during development: the image has never been built and the containers have never been run. The description below is what the files are *designed* to do. Do not describe the project as "Dockerized" until `docker compose up --build` has worked end to end.
+
+- **`Dockerfile`**: `python:3.11-slim` base; installs the **CPU-only** PyTorch wheel first (the default wheel pulls in gigabytes of CUDA libraries), then `requirements.txt`; **pre-downloads the embedding model** during the build and sets `HF_HUB_OFFLINE=1`, so containers should start without network access; installs runtime dependencies only (pytest lives in `requirements-dev.txt`); copies only the code it needs; runs as non-root user `docmind` (UID 1000); has a `HEALTHCHECK`; and runs Uvicorn with exactly one worker, because the index lives in process memory.
+- **`docker-compose.yml`**: one service. The image is built in two stages (Node builds `web/dist`; Python serves it plus the API), so a single container serves everything on port 8000, published on `127.0.0.1` only. It reads `.env` (optional), mounts `./data` so uploads, indexes and saved settings survive restarts, and health-checks `/api/health`.
 - **`.dockerignore`** keeps `.env`, the virtual environment, user data and git history out of the build context, so no secrets or uploaded documents are baked into the image.
-- The app runs identically without Docker (`python main.py api` / `ui`). Docker only adds reproducibility.
+- The image runs with `APP_ENV=production` (so it refuses to start without `DOCMIND_API_TOKEN`), listens on `$PORT`, and keeps all state in `DATA_DIR=/app/data`, which must be a persistent volume on a cloud host (see `docs/DEPLOYMENT.md`).
+- The app runs without Docker (`python main.py api`), and that is the only way it has actually been run. Open questions for the first real build: whether the build succeeds, whether the non-root user can write to the `./data` bind mount on Linux hosts, and whether the model loads offline.

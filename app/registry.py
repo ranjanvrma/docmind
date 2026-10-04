@@ -11,15 +11,25 @@ import threading
 from pathlib import Path
 
 from app.models import DocumentRecord
-from app.utils import atomic_write_json, read_json
+from app.utils import StorageError, atomic_write_json, read_json
+
+
+class RegistryError(StorageError):
+    pass
 
 
 class DocumentRegistry:
     def __init__(self, path: Path):
         self.path = path
         self._lock = threading.RLock()
-        raw = read_json(path, default={}) or {}
-        self._records: dict[str, DocumentRecord] = {k: DocumentRecord.from_dict(v) for k, v in raw.items()}
+        try:
+            raw = read_json(path, default={}) or {}
+            self._records: dict[str, DocumentRecord] = {k: DocumentRecord.from_dict(v) for k, v in raw.items()}
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            raise RegistryError(
+                f"The document registry {path} is unreadable ({exc.__class__.__name__}). Restore it from a "
+                "backup, or delete it together with the index directory and upload the documents again."
+            ) from exc
 
     def _save(self) -> None:
         atomic_write_json(self.path, {k: r.to_dict() for k, r in self._records.items()})

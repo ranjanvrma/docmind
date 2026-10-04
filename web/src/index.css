@@ -1,0 +1,272 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------------
+   Design tokens. Components only use these variables (through the Tailwind
+   theme below), so the light theme is a matter of redefining them.
+   ------------------------------------------------------------------------ */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0c0f;
+  --bg-2: #111318;
+  --bg-3: #171a20;
+  --surface: rgb(255 255 255 / 0.035);
+  --surface-2: rgb(255 255 255 / 0.06);
+  --surface-solid: #14161b;
+  --border: rgb(255 255 255 / 0.08);
+  --border-strong: rgb(255 255 255 / 0.15);
+  --fg: #ecebe6;
+  --fg-muted: #a1a2a8;
+  --fg-faint: #6e7077;
+  --accent: #67d0f5;
+  --accent-strong: #8fdcf8;
+  --accent-fg: #061118;
+  --accent-soft: rgb(103 208 245 / 0.12);
+  --accent-glow: rgb(103 208 245 / 0.28);
+  --accent-2: #b7a6f5;
+  --accent-2-soft: rgb(183 166 245 / 0.12);
+  --success: #5fd4a3;
+  --warning: #f2c66d;
+  --danger: #f2837d;
+  --shadow-glass: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 20px 50px -20px rgb(0 0 0 / 0.6),
+    0 8px 20px -12px rgb(0 0 0 / 0.5);
+  --noise-opacity: 0.045;
+  --ambient-1: rgb(103 208 245 / 0.10);
+  --ambient-2: rgb(183 166 245 / 0.08);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f3ef;
+  --bg-2: #ecebe6;
+  --bg-3: #e4e2dc;
+  --surface: rgb(255 255 255 / 0.55);
+  --surface-2: rgb(255 255 255 / 0.75);
+  --surface-solid: #fbfaf7;
+  --border: rgb(20 22 28 / 0.09);
+  --border-strong: rgb(20 22 28 / 0.18);
+  --fg: #16181d;
+  --fg-muted: #555963;
+  --fg-faint: #858892;
+  --accent: #0c86b8;
+  --accent-strong: #0a6f99;
+  --accent-fg: #ffffff;
+  --accent-soft: rgb(12 134 184 / 0.10);
+  --accent-glow: rgb(12 134 184 / 0.22);
+  --accent-2: #6a55c9;
+  --accent-2-soft: rgb(106 85 201 / 0.10);
+  --success: #138a5c;
+  --warning: #a8720f;
+  --danger: #c4413a;
+  --shadow-glass: 0 1px 0 0 rgb(255 255 255 / 0.7) inset, 0 18px 40px -22px rgb(20 22 28 / 0.25),
+    0 6px 16px -10px rgb(20 22 28 / 0.15);
+  --noise-opacity: 0.03;
+  --ambient-1: rgb(12 134 184 / 0.10);
+  --ambient-2: rgb(106 85 201 / 0.08);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-bg-3: var(--bg-3);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-solid: var(--surface-solid);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-faint: var(--fg-faint);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-2: var(--accent-2);
+  --color-accent-2-soft: var(--accent-2-soft);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SFMono-Regular", monospace;
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1.125rem;
+  --shadow-glass: var(--shadow-glass);
+  --animate-shimmer: shimmer 2.2s linear infinite;
+  --animate-spin-slow: spin 7s linear infinite;
+  --animate-pulse-soft: pulse-soft 2.4s ease-in-out infinite;
+  --animate-beam: beam 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+@keyframes spotlight {
+  from { opacity: 0; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes pulse-soft {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@keyframes beam {
+  0% { transform: translateX(-100%); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+
+/* ------------------------------------------------------------------------ base */
+@layer base {
+  html {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  html,
+  body {
+    /* clip (not hidden) so no element can create horizontal scrolling, incl. iOS Safari */
+    overflow-x: clip;
+  }
+  body {
+    min-height: 100dvh;
+  }
+  ::selection {
+    background: var(--accent-glow);
+  }
+  /* Scrollbars that match the theme */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+}
+
+/* Keyboard focus ring. Unlayered so it always wins over component styles. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------------ utilities */
+@layer components {
+  /* Glass surface: used for navigation, panels, cards and dialogs - not everything. */
+  .glass {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-glass);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+  }
+  .glass-strong {
+    background: color-mix(in srgb, var(--surface-solid) 82%, transparent);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-glass);
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
+  }
+
+  /* Gradient hairline border (applied with a mask so the fill stays transparent). */
+  .gradient-border {
+    position: relative;
+  }
+  .gradient-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, var(--accent-glow), transparent 40%, transparent 60%, var(--accent-2-soft));
+    mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    pointer-events: none;
+  }
+
+  /* Navigation once the page has scrolled: nearly opaque so content underneath never shows through. */
+  .nav-solid {
+    background: color-mix(in srgb, var(--surface-solid) 90%, transparent);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-glass), 0 12px 32px -12px rgb(0 0 0 / 0.55);
+    backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+  }
+
+  .text-gradient {
+    background: linear-gradient(110deg, var(--fg) 30%, var(--accent-strong) 60%, var(--accent-2) 90%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%);
+    background-size: 200% 100%;
+    animation: var(--animate-shimmer);
+    border-radius: 0.5rem;
+  }
+}
+
+/* Global grain: one static SVG turbulence tile, composited once. */
+.noise-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  opacity: var(--noise-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+}
+
+/* Ambient lighting behind everything; static radial gradients, no blur filter. */
+.ambient {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(60rem 40rem at 15% -10%, var(--ambient-1), transparent 60%),
+    radial-gradient(50rem 36rem at 95% 10%, var(--ambient-2), transparent 60%),
+    radial-gradient(40rem 30rem at 50% 110%, var(--ambient-1), transparent 65%);
+}
+.grid-pattern {
+  background-image:
+    linear-gradient(to right, var(--border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--border) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 30%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 30%, transparent 75%);
+}
+
+/* Lighter effects on small screens: less blur, less grain. */
+@media (max-width: 767px) {
+  .glass,
+  .glass-strong {
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+  .noise-overlay {
+    opacity: calc(var(--noise-opacity) * 0.6);
+  }
+}
+
+/* Reduced motion: system preference, or the in-app setting. */
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="full"]) *,
+  html:not([data-motion="full"]) *::before,
+  html:not([data-motion="full"]) *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+html[data-motion="reduced"] *,
+html[data-motion="reduced"] *::before,
+html[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}

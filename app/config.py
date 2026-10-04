@@ -17,6 +17,9 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_CATEGORIES = ["Research Paper", "Report", "Assignment", "Notes", "Policy", "Other"]
+VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+VALID_APP_ENVS = {"development", "production"}
 
 
 def _env_str(name: str, default: str) -> str:
@@ -44,6 +47,18 @@ def _env_float(name: str, default: float) -> float:
         raise ValueError(f"Environment variable {name} must be a number, got {raw!r}") from exc
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Environment variable {name} must be true or false, got {raw!r}")
+
+
 def _env_list(name: str, default: list[str]) -> list[str]:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -69,24 +84,39 @@ class Settings:
     max_top_k: int = 20
 
     # LLM
-    llm_provider: str = "anthropic"  # "anthropic" | "openai" (any OpenAI-compatible API)
-    llm_api_key: str = ""
+    llm_provider: str = "anthropic"  # "anthropic" | "openai" (OpenAI-compatible chat-completions API)
+    llm_api_key: str = field(default="", repr=False)  # never shown in repr/logs
     llm_model: str = "claude-opus-5"
     llm_base_url: str = ""  # only used by the OpenAI-compatible provider
-    llm_max_tokens: int = 4096  # thinking-capable models count reasoning tokens here too
-    llm_temperature: float = 0.0  # ignored by providers/models that don't accept it
+    llm_max_tokens: int = 8192  # thinking-capable models count reasoning tokens here too
+    llm_effort: str = ""  # Anthropic only: low|medium|high|xhigh|max; empty = model default
+    llm_temperature: float = 0.0  # sent only by the OpenAI-compatible client; AnthropicClient never passes it
     llm_timeout_seconds: float = 60.0
     max_context_chars: int = 6000
 
     # Ingestion limits
-    max_upload_mb: int = 25
+    max_upload_mb: int = 25  # per file
+    max_request_mb: int = 100  # whole upload request, checked before the body is read
+    max_pages: int = 500  # per document
     min_chars_per_page: int = 20  # pages with fewer characters are treated as empty
+
+    # API access
+    api_token: str = field(default="", repr=False)  # if set, required on every endpoint except /health
+    cors_allow_origins: list[str] = field(default_factory=list)  # empty = no CORS headers at all
 
     # Classification
     classifier_labels: list[str] = field(default_factory=lambda: list(DEFAULT_CATEGORIES))
 
     # Logging
     log_level: str = "INFO"
+
+    # Deployment profile. "production" refuses to start without DOCMIND_API_TOKEN
+    # and hides the interactive API docs unless API_DOCS=true.
+    app_env: str = "development"
+    api_docs: bool = True  # serve /api/docs and /api/openapi.json
+
+    # Built React UI (web/dist). Served by the API if it exists.
+    web_dist_dir: Path = PROJECT_ROOT / "web" / "dist"
 
     @property
     def raw_dir(self) -> Path:
@@ -109,6 +139,10 @@ class Settings:
         return self.max_upload_mb * 1024 * 1024
 
     @property
+    def max_request_bytes(self) -> int:
+        return self.max_request_mb * 1024 * 1024
+
+    @property
     def llm_configured(self) -> bool:
         return bool(self.llm_api_key and self.llm_model)
 
@@ -123,10 +157,45 @@ class Settings:
             raise ValueError("LLM_PROVIDER must be 'anthropic' or 'openai'")
         if not self.classifier_labels:
             raise ValueError("CLASSIFIER_LABELS must contain at least one label")
+        if self.llm_effort and self.llm_effort not in VALID_EFFORTS:
+            raise ValueError(f"LLM_EFFORT must be empty or one of {sorted(VALID_EFFORTS)}")
+        for name in ("embedding_batch_size", "llm_max_tokens", "max_context_chars", "max_upload_mb", "max_pages"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name.upper()} must be positive")
+        if self.llm_timeout_seconds <= 0:
+            raise ValueError("LLM_TIMEOUT_SECONDS must be positive")
+        if self.max_request_mb < self.max_upload_mb:
+            raise ValueError("MAX_REQUEST_MB must be at least MAX_UPLOAD_MB")
+        if self.llm_base_url and not self.llm_base_url.startswith(("http://", "https://")):
+            raise ValueError("LLM_BASE_URL must start with http:// or https://")
+        if not self.llm_model:
+            raise ValueError("LLM_MODEL must not be empty")
+        if self.app_env not in VALID_APP_ENVS:
+            raise ValueError(f"APP_ENV must be one of {sorted(VALID_APP_ENVS)}")
+        if self.app_env == "production" and not self.api_token:
+            raise ValueError(
+                "APP_ENV=production requires DOCMIND_API_TOKEN; without it anyone who can reach the server "
+                "can read and delete every document"
+            )
+        for origin in self.cors_allow_origins:
+            if origin == "*" or not origin.startswith(("http://", "https://")) or origin.endswith("/"):
+                raise ValueError(
+                    f"CORS_ALLOW_ORIGINS entries must be exact origins like https://app.example.com "
+                    f"(no wildcard, no trailing slash); got {origin!r}"
+                )
+        if self.log_level not in VALID_LOG_LEVELS:
+            raise ValueError(f"LOG_LEVEL must be one of {sorted(VALID_LOG_LEVELS)}")
 
     def ensure_dirs(self) -> None:
+        """Create the data directories and check that they are writable.
+
+        Raises OSError (e.g. PermissionError on a volume owned by another user).
+        """
         for directory in (self.raw_dir, self.processed_dir, self.index_dir, self.classifier_model_path.parent):
             directory.mkdir(parents=True, exist_ok=True)
+        probe = self.data_dir / ".write-test"
+        probe.write_bytes(b"")
+        probe.unlink()
 
 
 def load_settings() -> Settings:
@@ -144,13 +213,21 @@ def load_settings() -> Settings:
         llm_model=_env_str("LLM_MODEL", Settings.llm_model),
         llm_base_url=_env_str("LLM_BASE_URL", ""),
         llm_max_tokens=_env_int("LLM_MAX_TOKENS", Settings.llm_max_tokens),
+        llm_effort=_env_str("LLM_EFFORT", "").lower(),
         llm_temperature=_env_float("LLM_TEMPERATURE", Settings.llm_temperature),
         llm_timeout_seconds=_env_float("LLM_TIMEOUT_SECONDS", Settings.llm_timeout_seconds),
         max_context_chars=_env_int("MAX_CONTEXT_CHARS", Settings.max_context_chars),
         max_upload_mb=_env_int("MAX_UPLOAD_MB", Settings.max_upload_mb),
+        max_request_mb=_env_int("MAX_REQUEST_MB", Settings.max_request_mb),
+        max_pages=_env_int("MAX_PAGES", Settings.max_pages),
+        api_token=os.getenv("DOCMIND_API_TOKEN", "").strip(),
+        cors_allow_origins=_env_list("CORS_ALLOW_ORIGINS", []),
         min_chars_per_page=_env_int("MIN_CHARS_PER_PAGE", Settings.min_chars_per_page),
         classifier_labels=_env_list("CLASSIFIER_LABELS", DEFAULT_CATEGORIES),
         log_level=_env_str("LOG_LEVEL", "INFO").upper(),
+        app_env=_env_str("APP_ENV", "development").lower(),
+        api_docs=_env_bool("API_DOCS", os.getenv("APP_ENV", "").strip().lower() != "production"),
+        web_dist_dir=Path(_env_str("WEB_DIST_DIR", str(PROJECT_ROOT / "web" / "dist"))),
     )
     settings.validate()
     return settings
