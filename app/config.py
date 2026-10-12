@@ -134,6 +134,10 @@ class Settings:
     # 0 = use the TCP peer address. Render: 1. Never set it higher than the real
     # number of proxies, or clients can spoof their IP to dodge rate limits.
     trusted_proxy_count: int = 0
+    # Alternative to TRUSTED_PROXY_COUNT: a header the edge proxy sets to the
+    # client IP and overwrites if a client sends it (e.g. Cloudflare's
+    # CF-Connecting-IP). Takes precedence when present. Empty = not used.
+    client_ip_header: str = ""
 
     # Classification
     classifier_labels: list[str] = field(default_factory=lambda: list(DEFAULT_CATEGORIES))
@@ -234,6 +238,8 @@ class Settings:
         for name in ("public_rate_window_seconds", "public_qa_rate_window_seconds", "public_upload_rate_window_seconds", "session_ttl_hours"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name.upper()} must be positive")
+        if self.client_ip_header and not _COOKIE_NAME.match(self.client_ip_header):
+            raise ValueError("CLIENT_IP_HEADER must be a plain header name such as cf-connecting-ip")
         if not _COOKIE_NAME.match(self.session_cookie_name):
             raise ValueError("SESSION_COOKIE_NAME may contain only letters, digits, '_' and '-'")
         for origin in self.cors_allow_origins:
@@ -301,6 +307,7 @@ def load_settings() -> Settings:
         session_ttl_hours=_env_int("SESSION_TTL_HOURS", Settings.session_ttl_hours),
         session_cookie_name=_env_str("SESSION_COOKIE_NAME", Settings.session_cookie_name),
         trusted_proxy_count=_env_int("TRUSTED_PROXY_COUNT", Settings.trusted_proxy_count),
+        client_ip_header=_env_str("CLIENT_IP_HEADER", "").lower(),
         app_env=_env_str("APP_ENV", "development").lower(),
         api_docs=_env_bool("API_DOCS", None),
         web_dist_dir=Path(_env_str("WEB_DIST_DIR", str(PROJECT_ROOT / "web" / "dist"))),

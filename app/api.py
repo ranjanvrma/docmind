@@ -57,7 +57,7 @@ from app.models import (
     UploadItem,
     UploadResponse,
 )
-from app.ratelimit import RateLimiter, client_ip, retry_after_header
+from app.ratelimit import FORWARDING_HEADERS, RateLimiter, client_ip, retry_after_header
 from app.service import DocMindService, DocumentNotFoundError, QuotaExceededError
 from app.sessions import SessionCapacityError
 from app.utils import StorageError, sanitize_filename, setup_logging
@@ -296,7 +296,7 @@ def create_app(service: DocMindService | None = None, settings: Settings | None 
         """Identify an anonymous visitor and apply the general rate limit."""
         check_origin(request)
         s = svc.settings
-        ip = client_ip(request, s.trusted_proxy_count)
+        ip = client_ip(request, s.trusted_proxy_count, s.client_ip_header)
         cookie = request.cookies.get(s.session_cookie_name)
         owner = svc.sessions.resolve(cookie)
         for key in [f"ip:{ip}"] + ([f"s:{owner}"] if owner else []):
@@ -334,7 +334,7 @@ def create_app(service: DocMindService | None = None, settings: Settings | None 
         if supplied and secrets.compare_digest(supplied.encode(), settings.api_token.encode()):
             return
         # Count failures only, so a correct token is never throttled.
-        ip = client_ip(request, settings.trusted_proxy_count)
+        ip = client_ip(request, settings.trusted_proxy_count, settings.client_ip_header)
         retry = limiter.hit(f"admin-fail:ip:{ip}", ADMIN_FAILURES_PER_WINDOW, ADMIN_FAILURE_WINDOW_SECONDS)
         if retry is not None:
             raise too_many(retry, "Too many failed attempts. Try again later.")
@@ -591,16 +591,21 @@ def create_app(service: DocMindService | None = None, settings: Settings | None 
     def diagnostics(request: Request, svc: DocMindService = Depends(get_service)) -> dict:
         """Operational counters, and the client IP as the rate limiter sees it.
 
-        Use ``client_ip`` to check TRUSTED_PROXY_COUNT behind a proxy: it should
-        be your own public IP address, not the proxy's.
+        Use ``client_ip`` to check TRUSTED_PROXY_COUNT / CLIENT_IP_HEADER behind a
+        proxy: it should be your own public IP address, not the proxy's, and it
+        should stay the same across repeated calls. ``forwarding_headers`` shows
+        what the platform's proxies actually send (the caller's own addresses).
         """
         s = svc.settings
         records = svc.list_documents()
         return {
             "version": __version__,
-            "client_ip": client_ip(request, s.trusted_proxy_count),
+            "client_ip": client_ip(request, s.trusted_proxy_count, s.client_ip_header),
+            "peer": request.client.host if request.client else None,
             "forwarded_for_entries": len([p for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]),
+            "forwarding_headers": {h: request.headers[h] for h in FORWARDING_HEADERS if h in request.headers},
             "trusted_proxy_count": s.trusted_proxy_count,
+            "client_ip_header": s.client_ip_header or None,
             "active_sessions": len(svc.sessions),
             "documents": len(records),
             "documents_without_owner": sum(1 for r in records if r.owner is None),

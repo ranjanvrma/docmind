@@ -74,22 +74,36 @@ def retry_after_header(seconds: float) -> dict[str, str]:
     return {"Retry-After": str(max(1, math.ceil(seconds)))}
 
 
-def client_ip(request: Request, trusted_proxy_count: int) -> str:
+FORWARDING_HEADERS = ("x-forwarded-for", "cf-connecting-ip", "true-client-ip", "x-real-ip", "forwarded")
+
+
+def _valid_ip(value: str) -> str | None:
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
+def client_ip(request: Request, trusted_proxy_count: int, client_ip_header: str = "") -> str:
     """The client's IP address for rate limiting.
 
-    With ``trusted_proxy_count = n`` the address is the n-th entry from the
-    right of X-Forwarded-For, i.e. the one appended by the outermost proxy we
-    trust. Entries further left are supplied by the client and ignored, so a
-    forged header cannot change the result.
+    * ``client_ip_header`` (e.g. ``cf-connecting-ip``): a single-value header
+      that the platform's edge proxy sets itself and overwrites if a client
+      sends it. Only configure a header your proxy is documented to overwrite.
+    * Otherwise, with ``trusted_proxy_count = n``, the n-th entry from the right
+      of X-Forwarded-For, i.e. the one appended by the outermost proxy we trust.
+      Entries further left are supplied by the client and ignored, so a forged
+      header cannot change the result.
+    * Otherwise the TCP peer address.
     """
     peer = request.client.host if request.client else "unknown"
+    if client_ip_header:
+        value = _valid_ip(request.headers.get(client_ip_header, ""))
+        if value:
+            return value
     if trusted_proxy_count <= 0:
         return peer
     forwarded = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
     if len(forwarded) < trusted_proxy_count:
         return peer
-    candidate = forwarded[-trusted_proxy_count]
-    try:
-        return str(ipaddress.ip_address(candidate))
-    except ValueError:
-        return peer
+    return _valid_ip(forwarded[-trusted_proxy_count]) or peer

@@ -34,6 +34,7 @@ In `APP_ENV=production`, an `LLM_BASE_URL` saved from the Settings page must be 
 | `CLASSIFIER_LABELS` | `Research Paper,Report,Assignment,Notes,Policy,Other` | ✓ | Zero-shot categories |
 | `DOCMIND_API_TOKEN` | – | ✗ | **Secret.** Administrator token for `/api/admin/*` (sent as `X-API-Key` or `Authorization: Bearer`). Public endpoints never need it. Without it the admin endpoints are open, which is allowed only in development; in production it is required and must be at least 24 characters. |
 | `TRUSTED_PROXY_COUNT` | `0` | ✗ | Reverse proxies in front of the app. `0` = the TCP peer is the client IP; `n` = the n-th `X-Forwarded-For` entry from the right. Expected `1` on Render (unverified; check `client_ip` in `/api/admin/diagnostics`). Too high lets clients spoof their IP. |
+| `CLIENT_IP_HEADER` | – | ✗ | Alternative to `TRUSTED_PROXY_COUNT`: a single-value header the edge proxy sets to the client IP and overwrites (e.g. `cf-connecting-ip`). Used first when present and valid. Choose it from `forwarding_headers` in `GET /api/admin/diagnostics`. |
 | `PUBLIC_RATE_LIMIT` / `PUBLIC_RATE_WINDOW_SECONDS` | `120` / `60` | ✗ | Public API requests per IP and per session (not `/api/health`). `0` disables. |
 | `PUBLIC_QA_RATE_LIMIT` / `PUBLIC_QA_RATE_WINDOW_SECONDS` | `20` / `3600` | ✗ | Questions per IP and per session |
 | `PUBLIC_QA_GLOBAL_LIMIT` | `200` | ✗ | Questions per QA window across all visitors (counted only when the visitor has processed documents); protects the server's LLM quota |

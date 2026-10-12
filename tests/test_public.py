@@ -420,3 +420,29 @@ def test_synchronous_processing_is_capped_for_visitors_too(tmp_path, fake_embedd
         assert r.status_code == 429 and "at most 2" in r.json()["detail"]
         ids = [d["doc_id"] for d in c.get("/api/documents").json()]
         assert c.post("/api/documents/process", json={"doc_ids": ids[:2]}).status_code == 200
+
+
+def test_client_ip_header_from_the_edge_proxy_is_used_when_configured(tmp_path, fake_embedder):
+    svc = _service(tmp_path, fake_embedder, public_rate_limit=2, client_ip_header="cf-connecting-ip")
+    with TestClient(create_app(svc)) as c:
+        # Requests arrive through changing proxy hops, but the edge header names the same client.
+        codes = [
+            c.get("/api/documents", headers={"cf-connecting-ip": "198.51.100.7", "x-forwarded-for": f"10.0.0.{i}"}).status_code
+            for i in range(3)
+        ]
+        assert codes == [200, 200, 429]
+        assert c.get("/api/documents", headers={"cf-connecting-ip": "198.51.100.8"}).status_code == 200
+        # A malformed header value falls back instead of creating a free identity per request.
+        assert c.get("/api/documents", headers={"cf-connecting-ip": "not-an-ip"}).status_code == 200
+
+
+def test_diagnostics_reports_forwarding_headers_for_the_admin(tmp_path, fake_embedder):
+    svc = _prod(tmp_path, fake_embedder, client_ip_header="cf-connecting-ip")
+    with _client(create_app(svc)) as c:
+        d = c.get(
+            "/api/admin/diagnostics",
+            headers={"x-api-key": TOKEN, "cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "203.0.113.9, 10.1.2.3"},
+        ).json()
+    assert d["client_ip"] == "203.0.113.9" and d["client_ip_header"] == "cf-connecting-ip"
+    assert d["forwarding_headers"]["x-forwarded-for"] == "203.0.113.9, 10.1.2.3" and d["forwarded_for_entries"] == 2
+    assert TOKEN not in str(d)
