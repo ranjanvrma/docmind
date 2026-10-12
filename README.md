@@ -2,6 +2,8 @@
 
 **Ask questions about your PDFs and get answers you can verify.** DocMind indexes your documents, finds passages by meaning, and answers questions using only those passages, with every claim linked to the exact document and page it came from. When the answer isn't in your documents, it says so.
 
+**Live demo: [docmind-gmjl.onrender.com](https://docmind-gmjl.onrender.com)** (Render free tier: the first visit after idle can take about a minute to wake up, and uploads are cleared on restart).
+
 Anyone can use it straight away: no account and no access token. Each browser gets its own private, temporary library, and rate limits keep the shared LLM quota safe.
 
 It is a retrieval-augmented generation (RAG) system built from first principles, with no orchestration framework hiding the steps: PyMuPDF → sentence-aware chunking → MiniLM embeddings (ONNX Runtime) → FAISS → grounded prompt → LLM → citation validation. One container serves the FastAPI backend and the React interface, and it is designed to run for **$0**: free OpenRouter models, CPU-only inference, about 250 MB of RAM.
