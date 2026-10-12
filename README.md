@@ -114,7 +114,7 @@ All configuration is environment variables (`.env` locally, the platform's secre
 | `LLM_API_KEY` | **Secret.** OpenRouter key from https://openrouter.ai/keys. Without it, search still works and Q&A is disabled. |
 | `DOCMIND_API_TOKEN` | **Secret.** Administrator token for `/api/admin/*` only (server settings, LLM test, evaluation lab, diagnostics). Visitors never need it. Required (≥ 24 characters) when `APP_ENV=production`. |
 | `APP_ENV` | `production` (the Docker image's default) enforces the token and hides `/api/docs` |
-| `TRUSTED_PROXY_COUNT` | Proxies in front of the app that append to `X-Forwarded-For` (Render: `1`), so rate limits see the real client IP |
+| `TRUSTED_PROXY_COUNT` | Proxies in front of the app that append to `X-Forwarded-For` (Render: `3`, verified), so rate limits see the real client IP |
 | `PUBLIC_*`, `SESSION_TTL_HOURS` | Visitor limits and library lifetime (see [Public use](#public-use-and-security-model)) |
 | `DATA_DIR` | Where uploads, the index, the registry and saved settings live. Must be persistent in production. |
 | `CHUNK_SIZE`, `CHUNK_OVERLAP`, `TOP_K`, `MIN_RELEVANCE` | Retrieval tuning (600 / 150 / 5 / 0.15); also editable on the Settings page |
@@ -135,7 +135,7 @@ docker run -p 8000:8000 -v "$PWD/data:/app/data" \
 
 or `docker compose up --build -d` with a `.env` file. On any host that runs a Dockerfile (Render, Hugging Face Spaces, Koyeb, Fly.io, a free VM):
 
-1. Deploy from this repository's `Dockerfile`; set the secrets above in the platform's secret settings. Behind Render's proxy also set `TRUSTED_PROXY_COUNT=1`, then confirm with `GET /api/admin/diagnostics` that `client_ip` is your own IP.
+1. Deploy from this repository's `Dockerfile`; set the secrets above in the platform's secret settings. Behind Render's proxies also set `TRUSTED_PROXY_COUNT=3` (Cloudflare edge plus Render's internal hops; verified), then confirm with `GET /api/admin/diagnostics` that `client_ip` is your own IP.
 2. Health check path: `/api/health` (public, reveals no secrets). Allow ~90 s for the first start.
 3. Run **one** instance (the index lives in process memory). 512 MB of RAM is enough for typical use.
 4. Mount a **persistent volume at `/app/data`** if the platform offers one.

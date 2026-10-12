@@ -55,7 +55,7 @@ An in-process sliding-window limiter (`app/ratelimit.py`) counts each public req
 
 `MAX_UPLOAD_MB`, `MAX_REQUEST_MB` and `MAX_PAGES` still apply (see Upload limits below).
 
-**Client IP.** `TRUSTED_PROXY_COUNT` (default `0`) decides it. `0` uses the TCP peer. With `n > 0` the client IP is the n-th `X-Forwarded-For` entry from the right; entries further left are client-supplied and ignored, so forging the header does not help. Setting it higher than the real number of proxies lets clients spoof their IP. On Render `TRUSTED_PROXY_COUNT=1` is the expected value but has **not been verified** there; check that `client_ip` in `GET /api/admin/diagnostics` is your own public IP.
+**Client IP.** `TRUSTED_PROXY_COUNT` (default `0`) decides it. `0` uses the TCP peer. With `n > 0` the client IP is the n-th `X-Forwarded-For` entry from the right; entries further left are client-supplied and ignored, so forging the header does not help. Setting it higher than the real number of proxies lets clients spoof their IP. On Render use `TRUSTED_PROXY_COUNT=3`. Verified on Render on 2026-10-12: X-Forwarded-For arrives as `client, Cloudflare edge, Render internal proxy` (3 entries), so `TRUSTED_PROXY_COUNT=3` yields the visitor's IP. A forged `X-Forwarded-For` did not escape a 429 in the live test, and Cloudflare itself rejects a forged `CF-Connecting-IP` with 403. `CLIENT_IP_HEADER=cf-connecting-ip` is an equivalent alternative.
 
 **Limits of this limiter.** Counters live in process memory: they reset on restart, and several instances would each count separately, so it is not suitable as the only limiter for a multi-instance deployment (use a shared store such as Redis, or the platform's rate limiting). Users behind one NAT or corporate proxy share the per-IP limits.
 
@@ -121,7 +121,7 @@ Logs contain document IDs, counts, sizes and timings. They **never** contain que
 
 - **No accounts.** A visitor's identity is the session cookie. Whoever holds it (for example after it is stolen from the browser or used on a shared computer) can read, search and delete that session's documents until the session expires. Clearing cookies loses access to one's own documents.
 - **In-process rate limiter.** Counters reset on restart and are per process; it is not suitable as the only limiter for multiple instances. Visitors behind one NAT share the per-IP limits.
-- **`TRUSTED_PROXY_COUNT` on Render is unverified** (see above). If it is wrong, either all visitors share the proxy's IP limits or clients can spoof their IP.
+- **`TRUSTED_PROXY_COUNT` depends on the platform's proxy chain** (3 on Render, verified). If the platform changes its chain, re-check `GET /api/admin/diagnostics`; a wrong value either disables per-IP limits or lets clients spoof their IP. Visitors whose network uses several public IPs get a correspondingly larger per-IP allowance.
 - **DNS rebinding** after an LLM base URL is saved is not covered by the SSRF guard (unchanged).
 - **Single instance only.** Sessions, the processing queue and the limiter live in one process and one data directory.
 - Not implemented: TLS (use a reverse proxy or the platform's HTTPS) · malware scanning · sandboxing of the PDF parser · audit logging. See [DEPLOYMENT.md](DEPLOYMENT.md) for how to compensate at the infrastructure level.

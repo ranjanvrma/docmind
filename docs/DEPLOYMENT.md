@@ -13,7 +13,7 @@ Set these on the host or platform (never commit them; `.env` is git- and docker-
 | `DATA_DIR` | Must point at **persistent** storage (see §5). `/app/data` in the image. |
 | `APP_ENV` | `production` in the Docker image; `development` otherwise. |
 | `PORT` | Set by most platforms; the app listens on it. |
-| `TRUSTED_PROXY_COUNT` | Number of reverse proxies in front of the app that append to `X-Forwarded-For` (default `0` = use the TCP peer). Needed for per-IP rate limits behind a platform proxy. On Render `1` is the expected value but is **unverified**: after deploying, call `GET /api/admin/diagnostics` and check that `client_ip` is your own public IP. Never set it higher than the real number of proxies, or clients can spoof their IP. |
+| `TRUSTED_PROXY_COUNT` | Number of reverse proxies in front of the app that append to `X-Forwarded-For` (default `0` = use the TCP peer). Needed for per-IP rate limits behind a platform proxy. On Render use `3`. Verified on Render on 2026-10-12: X-Forwarded-For arrives as `client, Cloudflare edge, Render internal proxy` (3 entries), so `TRUSTED_PROXY_COUNT=3` yields the visitor's IP; `1` would pick Render's internal proxy address, which changes per request and silently disables per-IP limits. Check `client_ip` in `GET /api/admin/diagnostics`: it must be your own public IP. Never set it higher than the real number of proxies, or clients can spoof their IP. |
 | `PUBLIC_*`, `SESSION_TTL_HOURS` | Rate limits and quotas for anonymous visitors (§7a). The defaults suit a small demo. |
 
 Everything else has working defaults ([CONFIGURATION.md](CONFIGURATION.md)). No URL in the app or the UI points at `localhost`: the built UI calls `/api` on its own origin.
@@ -52,7 +52,7 @@ Any platform that runs a Dockerfile works: Render, Railway, Fly.io, Hugging Face
 
 Platform notes (verify against the platform's current documentation):
 
-- **Render** (Docker web service): Render sets `PORT`, which the image honours. Set the health check path to `/api/health` and add the secrets as environment variables. Keep `DOCMIND_API_TOKEN` (now admin-only) and the `LLM_*` values; add `TRUSTED_PROXY_COUNT=1`, then verify it with `GET /api/admin/diagnostics` (not yet verified on Render). Optionally tune the `PUBLIC_*` limits and lower `MAX_UPLOAD_MB` / `MAX_PAGES` for the free tier's 512 MB. Render Free has an ephemeral disk: everything is lost on restart, redeploy or spin-down.
+- **Render** (Docker web service): Render sets `PORT`, which the image honours. Set the health check path to `/api/health` and add the secrets as environment variables. Keep `DOCMIND_API_TOKEN` (now admin-only) and the `LLM_*` values; add `TRUSTED_PROXY_COUNT=3` (verified on Render: Cloudflare edge plus Render's internal proxy) and confirm with `GET /api/admin/diagnostics`. Optionally tune the `PUBLIC_*` limits and lower `MAX_UPLOAD_MB` / `MAX_PAGES` for the free tier's 512 MB. Render Free has an ephemeral disk: everything is lost on restart, redeploy or spin-down.
 - **Hugging Face Spaces** (Docker SDK): Spaces route traffic to port 7860 unless the Space's README metadata sets `app_port`. Either add the Space variable `PORT=7860`, or set `app_port: 8000`. Spaces run containers as UID 1000, which matches the image's user. Add the secrets as Space secrets.
 - **Any VM** (including always-free cloud VMs): `docker compose up --build -d` with a `.env` file, behind Caddy or nginx for HTTPS (§7). This is the most reliable free option for persistence, because the disk is yours.
 

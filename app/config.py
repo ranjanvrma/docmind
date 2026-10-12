@@ -131,7 +131,7 @@ class Settings:
     session_ttl_hours: int = 24  # idle sessions (and their documents) are deleted after this
     session_cookie_name: str = "docmind_session"
     # How many reverse proxies in front of the app append to X-Forwarded-For.
-    # 0 = use the TCP peer address. Render: 1. Never set it higher than the real
+    # 0 = use the TCP peer address. Render: 3 (verified). Never set it higher than the real
     # number of proxies, or clients can spoof their IP to dodge rate limits.
     trusted_proxy_count: int = 0
     # Alternative to TRUSTED_PROXY_COUNT: a header the edge proxy sets to the

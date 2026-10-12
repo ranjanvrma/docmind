@@ -477,7 +477,7 @@ Render's free tier has an **ephemeral disk** and spins the service down when idl
 Environment variables to set on Render (or any host):
 
 - Keep `DOCMIND_API_TOKEN` (now admin-only, at least 24 characters) and the `LLM_*` values.
-- Add `TRUSTED_PROXY_COUNT=1`. This is the expected value behind Render's proxy but has **not been verified** there: after deploying, call `GET /api/admin/diagnostics` with the admin token and check that `client_ip` is your own public IP. If it shows a proxy address, the value is too low; never set it higher than the real number of proxies.
+- Add `TRUSTED_PROXY_COUNT=3`. Verified on Render on 2026-10-12: X-Forwarded-For arrives as `client, Cloudflare edge, Render internal proxy` (3 entries), so `TRUSTED_PROXY_COUNT=3` yields the visitor's IP. After any platform change, call `GET /api/admin/diagnostics` with the admin token and check that `client_ip` is your own public IP; if it shows a proxy address the value is too low, and it must never be higher than the real number of proxies.
 - Optionally tune the `PUBLIC_*` limits. On a 512 MB free instance, lower `MAX_UPLOAD_MB` and `MAX_PAGES` (for example 10 MB / 100 pages) so processing stays short, and set `PUBLIC_QA_GLOBAL_LIMIT` to fit your LLM provider's free quota. `SESSION_TTL_HOURS` and `PUBLIC_MAX_SESSIONS` bound disk use.
 - Leave `CORS_ALLOW_ORIGINS` empty and `API_DOCS` unset (docs off in production).
 
